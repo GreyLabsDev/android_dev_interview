@@ -31,6 +31,14 @@ function PreBlock({ children }: { children?: ReactNode }) {
   )
 }
 
+function scrollToSection(section: string) {
+  window.requestAnimationFrame(() => {
+    const heading =
+      document.getElementById(section) ?? document.getElementById(`user-content-${section}`)
+    heading?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  })
+}
+
 export function TheoryPage() {
   const { slug } = useParams()
   const navigate = useNavigate()
@@ -50,9 +58,7 @@ export function TheoryPage() {
       window.scrollTo({ top: 0 })
       return
     }
-    window.requestAnimationFrame(() => {
-      document.getElementById(section)?.scrollIntoView({ behavior: 'smooth' })
-    })
+    scrollToSection(section)
   }, [material?.slug, searchParams])
 
   if (!material || requestedMaterialMissing) {
@@ -72,6 +78,7 @@ export function TheoryPage() {
 
   function selectSection(section: string) {
     setSearchParams({ section })
+    scrollToSection(section)
   }
 
   return (

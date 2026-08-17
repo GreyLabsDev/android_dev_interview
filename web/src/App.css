@@ -514,6 +514,13 @@ progress::-webkit-progress-value {
   letter-spacing: -0.035em;
 }
 
+.markdown-article h1,
+.markdown-article h2,
+.markdown-article h3,
+.markdown-article h4 {
+  scroll-margin-top: 92px;
+}
+
 .markdown-article h2 {
   margin: 48px 0 14px;
   padding-top: 18px;

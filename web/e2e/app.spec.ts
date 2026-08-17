@@ -16,6 +16,21 @@ test('renders the Markdown library', async ({ page }) => {
   await expect(page.locator('.markdown-article')).toContainText('Senior Android')
 })
 
+test('scrolls to a theory section from the table of contents', async ({ page }) => {
+  await page.goto('/#/theory/kotlin-senior-android-guide')
+  await page.getByText('Оглавление', { exact: true }).click()
+
+  const sectionTitle = '1.1. Kotlin — компилируемый или интерпретируемый язык?'
+  const sectionHeading = page.getByRole('heading', { name: sectionTitle })
+  const sectionId = await sectionHeading.getAttribute('id')
+
+  expect(sectionId).toBeTruthy()
+  await page.getByRole('button', { name: sectionTitle }).click()
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(500)
+  const sectionSlug = sectionId!.replace(/^user-content-/u, '')
+  await expect(page).toHaveURL(new RegExp(`section=${encodeURIComponent(sectionSlug)}`))
+})
+
 test('forces dark theme and returns to device theme', async ({ page }) => {
   await page.goto('/')
   const themeSwitch = page.getByRole('switch')

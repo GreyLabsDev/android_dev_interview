@@ -1,6 +1,7 @@
 import { readdir, readFile, mkdir, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import GithubSlugger from 'github-slugger'
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const webDirectory = resolve(scriptDirectory, '..')
@@ -27,21 +28,14 @@ function slugify(value) {
     .replace(/^-|-$/gu, '')
 }
 
-function headingSlug(value) {
-  return value
-    .toLowerCase()
-    .replace(/[`*_~[\]()]/gu, '')
-    .replace(/[^\p{L}\p{N}]+/gu, '-')
-    .replace(/^-|-$/gu, '')
-}
-
 const materials = await Promise.all(
   files.map(async (file) => {
     const content = await readFile(join(repositoryDirectory, file), 'utf8')
+    const headingSlugger = new GithubSlugger()
     const headings = [...content.matchAll(/^(#{1,4})\s+(.+)$/gmu)].map((match) => ({
       depth: match[1].length,
       title: match[2].trim(),
-      slug: headingSlug(match[2].trim()),
+      slug: headingSlugger.slug(match[2].trim()),
     }))
     return {
       file,
