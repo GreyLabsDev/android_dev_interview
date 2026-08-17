@@ -373,6 +373,116 @@ suspend fun <T, R> Iterable<T>.mapParallel(
 
 ## 4.3. Дедупликация одновременных запросов (single-flight)
 
+### Что делает `Mutex`
+
+`kotlinx.coroutines.sync.Mutex` защищает критическую секцию так, чтобы одновременно внутри неё
+находилась только одна корутина. Если mutex уже занят, следующая корутина **приостанавливается**,
+а не блокирует текущий поток. Поэтому `Mutex` подходит для coroutine-кода, в отличие от попытки
+удерживать `synchronized`/`ReentrantLock` через suspension point.
+
+Обычный шаблон:
+
+```kotlin
+private val mutex = Mutex()
+
+suspend fun updateSafely() {
+    mutex.withLock {
+        // Чтение и изменение общего mutable state.
+    }
+}
+```
+
+`withLock` освобождает mutex в `finally`, в том числе если код внутри бросил исключение или корутина
+была отменена. Ожидание свободного mutex cancellable: отменённая ожидающая корутина перестаёт
+претендовать на вход.
+
+Важные свойства:
+
+- `Mutex` защищает **инвариант**, а не отдельную строку кода;
+- он не привязан к потоку: корутина может приостановиться и продолжиться на другом;
+- он не реентерабельный — повторный `withLock` того же mutex из критической секции приводит к зависанию;
+- он сериализует работу, поэтому долгий network/disk вызов под общим mutex допустим только осознанно;
+- для нескольких одновременных разрешений нужен `Semaphore`, а для простой числовой операции часто
+  лучше atomic или `MutableStateFlow.update`.
+
+### Пример 1. Счётчик с составной операцией
+
+`counter++` — это чтение, вычисление и запись, а не одна атомарная операция:
+
+```kotlin
+class SafeCounter {
+    private val mutex = Mutex()
+    private var value = 0
+
+    suspend fun increment() {
+        mutex.withLock {
+            value += 1
+        }
+    }
+
+    suspend fun current(): Int =
+        mutex.withLock { value }
+}
+
+suspend fun countConcurrently(): Int = coroutineScope {
+    val counter = SafeCounter()
+
+    repeat(1_000) {
+        launch(Dispatchers.Default) {
+            counter.increment()
+        }
+    }
+
+    // coroutineScope дождётся всех launch перед возвратом.
+    counter
+}.current()
+```
+
+Для одного счётчика `AtomicInteger` проще и быстрее. Пример показывает базовую механику; `Mutex`
+становится особенно полезен, когда одним действием нужно согласованно изменить несколько значений.
+
+### Пример 2. Атомарный перевод между счетами
+
+Проверка баланса и обе записи составляют один инвариант, поэтому находятся в одной критической секции:
+
+```kotlin
+class Wallet {
+    private val mutex = Mutex()
+    private val balances = mutableMapOf<String, Long>()
+
+    suspend fun deposit(account: String, amount: Long) {
+        require(amount > 0)
+        mutex.withLock {
+            balances[account] = balances.getOrDefault(account, 0L) + amount
+        }
+    }
+
+    suspend fun transfer(
+        from: String,
+        to: String,
+        amount: Long,
+    ) {
+        require(amount > 0)
+
+        mutex.withLock {
+            val sourceBalance = balances.getOrDefault(from, 0L)
+            require(sourceBalance >= amount) { "Insufficient funds" }
+
+            balances[from] = sourceBalance - amount
+            balances[to] = balances.getOrDefault(to, 0L) + amount
+        }
+    }
+
+    suspend fun snapshot(): Map<String, Long> =
+        mutex.withLock { balances.toMap() }
+}
+```
+
+Если защищать списание и зачисление разными lock-вызовами, другая корутина сможет увидеть
+промежуточное состояние, в котором деньги уже списаны, но ещё не зачислены.
+
+### Продвинутый пример: single-flight
+
 ```kotlin
 class SingleFlight<K, V>(private val scope: CoroutineScope) {
     private val mutex = Mutex()

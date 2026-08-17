@@ -523,6 +523,135 @@ Kotlin, кстати, защищает от родственной ошибки 
 И обязательная оговорка: корутины гонки **не устраняют**. Внутри одной корутины код последователен,
 но несколько дочерних корутин работают параллельно и на разных потоках.
 
+## 12.1. `Mutex`: семантика и правильное применение
+
+`kotlinx.coroutines.sync.Mutex` — coroutine-friendly взаимное исключение. Свободный mutex захватывается
+сразу, а при занятом mutex вызывающая корутина приостанавливается, освобождая поток для другой работы.
+Это главное отличие от `synchronized` и `ReentrantLock.lock()`, которые блокируют поток ожидания.
+
+Предпочтительный API — `withLock`:
+
+```kotlin
+private val mutex = Mutex()
+
+suspend fun changeState() {
+    mutex.withLock {
+        // Критическая секция.
+    }
+}
+```
+
+Ручная пара `lock()`/`unlock()` нужна редко: легко забыть `unlock()` на ветке ошибки. `withLock`
+гарантирует освобождение через `finally`. Ожидание `lock` cancellable, но после успешного входа
+защищённый код подчиняется обычным правилам cancellation.
+
+На JVM успешный `unlock` happens-before последующего успешного `lock` того же mutex. Это обеспечивает
+видимость записей между критическими секциями. Неуспешный `tryLock` такого memory effect не даёт.
+
+В отличие от `synchronized`, `Mutex` не реентерабельный. Правильная композиция — один раз взять mutex,
+а внутреннюю работу вынести в функцию, которая предполагает уже захваченный lock:
+
+```kotlin
+class Inventory {
+    private val mutex = Mutex()
+    private val quantities = mutableMapOf<String, Int>()
+
+    suspend fun add(
+        sku: String,
+        amount: Int,
+    ) {
+        require(amount > 0)
+        mutex.withLock {
+            addLocked(sku, amount)
+        }
+    }
+
+    suspend fun addAndGetTotal(
+        sku: String,
+        amount: Int,
+    ): Int {
+        require(amount > 0)
+        return mutex.withLock {
+            addLocked(sku, amount) // не пытается взять mutex повторно
+            quantities.values.sum()
+        }
+    }
+
+    // Вызывать только из mutex.withLock.
+    private fun addLocked(
+        sku: String,
+        amount: Int,
+    ) {
+        quantities[sku] =
+            quantities.getOrDefault(sku, 0) + amount
+    }
+}
+```
+
+### Пример 1. Ровно одно обновление токена
+
+Иногда suspend-вызов под mutex — осознанная часть инварианта. Пока один запрос обновляет токен,
+остальные должны дождаться того же результата, а не запустить параллельный refresh:
+
+```kotlin
+class TokenRepository(
+    private val api: AuthApi,
+    private val clock: Clock,
+) {
+    private val mutex = Mutex()
+    private var token: Token? = null
+
+    suspend fun validToken(): Token =
+        mutex.withLock {
+            token
+                ?.takeIf { it.expiresAt > clock.now() }
+                ?: api.refreshToken().also { refreshed ->
+                    token = refreshed
+                }
+        }
+}
+```
+
+Здесь network-вызов намеренно удерживает mutex: это гарантирует один refresh. Цена — все чтения токена
+сериализованы. Для независимых ключей или сложного lifecycle лучше keyed mutex/single-flight, чтобы
+одна медленная операция не останавливала несвязанные запросы.
+
+### Пример 2. Чужой код вызывается после критической секции
+
+Callback, listener или пользовательскую suspend-функцию не следует вызывать под mutex без строгой
+необходимости: неизвестный код может долго выполняться или попытаться войти в тот же объект.
+Под lock создают согласованный snapshot, а уведомляют снаружи:
+
+```kotlin
+class SettingsStore {
+    private val mutex = Mutex()
+    private val values = mutableMapOf<String, String>()
+
+    suspend fun update(
+        key: String,
+        value: String,
+        onChanged: suspend (Map<String, String>) -> Unit,
+    ) {
+        val snapshot = mutex.withLock {
+            values[key] = value
+            values.toMap()
+        }
+
+        // Mutex уже освобождён: callback не удерживает критическую секцию.
+        onChanged(snapshot)
+    }
+}
+```
+
+Такой код защищает mutable map, минимизирует время удержания mutex и не допускает утечки изменяемой
+коллекции наружу. При этом порядок завершения callbacks уже не сериализован — если он важен как часть
+контракта, нужна отдельная модель доставки событий (`Channel`, actor/confinement или явно
+спроектированная очередь).
+
+`Mutex` выбирают для составного mutable-инварианта в coroutine-коде. Для одной переменной часто лучше
+atomic/CAS, для ограничения параллелизма — `Semaphore`, для последовательного владельца состояния —
+confinement/actor, а для короткого несуспендящего Java-кода — `synchronized`.
+
 ---
 
 # 13. Android-специфика
