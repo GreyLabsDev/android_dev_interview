@@ -15,3 +15,19 @@ test('renders the Markdown library', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Вся теория' })).toBeVisible()
   await expect(page.locator('.markdown-article')).toContainText('Senior Android')
 })
+
+test('forces dark theme and returns to device theme', async ({ page }) => {
+  await page.goto('/')
+  const themeSwitch = page.getByRole('switch')
+
+  await expect(themeSwitch).toHaveAttribute('aria-checked', 'false')
+  await themeSwitch.click()
+  await expect(themeSwitch).toHaveAttribute('aria-checked', 'true')
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+
+  await page.reload()
+  await expect(page.getByRole('switch')).toHaveAttribute('aria-checked', 'true')
+
+  await page.getByRole('switch').click()
+  await expect(page.locator('html')).not.toHaveAttribute('data-theme')
+})

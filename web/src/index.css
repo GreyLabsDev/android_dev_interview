@@ -1,9 +1,9 @@
 :root {
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  color: #172033;
-  background: #f5f7fb;
+  color-scheme: light;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
+  --page-bg: #f5f7fb;
   --ink: #172033;
   --muted: #65708a;
   --surface: #ffffff;
@@ -17,8 +17,84 @@
   --danger: #c43d4f;
   --danger-soft: #fff0f2;
   --warning: #9a6500;
+  --header-bg: rgba(255, 255, 255, 0.94);
+  --on-accent: #ffffff;
+  --accent-border: #cdd9ff;
+  --code-bg: #172033;
+  --code-text: #e7edf9;
+  --code-control-bg: #26324b;
+  --code-control-border: #44516b;
+  --article-text: #344058;
+  --success-text: #0c6644;
+  --success-border: #74c7a6;
+  --danger-text: #9e2739;
+  --danger-border: #e9a5ae;
   --radius: 16px;
   --content: 1180px;
+  color: var(--ink);
+  background: var(--page-bg);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page-bg: #0f1420;
+  --ink: #edf2ff;
+  --muted: #a9b3c9;
+  --surface: #171e2d;
+  --surface-soft: #212a3b;
+  --border: #303b50;
+  --accent: #8ca8ff;
+  --accent-strong: #b1c2ff;
+  --accent-soft: #1f315f;
+  --success: #65d6a5;
+  --success-soft: #12382c;
+  --danger: #ff98a7;
+  --danger-soft: #451d26;
+  --warning: #f2c76e;
+  --header-bg: rgba(15, 20, 32, 0.94);
+  --on-accent: #ffffff;
+  --accent-border: #4a67b8;
+  --code-bg: #090d16;
+  --code-text: #e7edf9;
+  --code-control-bg: #26324b;
+  --code-control-border: #52617d;
+  --article-text: #c6d0e3;
+  --success-text: #95e6c4;
+  --success-border: #347d62;
+  --danger-text: #ffb2bd;
+  --danger-border: #8d4551;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    color-scheme: dark;
+    --page-bg: #0f1420;
+    --ink: #edf2ff;
+    --muted: #a9b3c9;
+    --surface: #171e2d;
+    --surface-soft: #212a3b;
+    --border: #303b50;
+    --accent: #8ca8ff;
+    --accent-strong: #b1c2ff;
+    --accent-soft: #1f315f;
+    --success: #65d6a5;
+    --success-soft: #12382c;
+    --danger: #ff98a7;
+    --danger-soft: #451d26;
+    --warning: #f2c76e;
+    --header-bg: rgba(15, 20, 32, 0.94);
+    --on-accent: #ffffff;
+    --accent-border: #4a67b8;
+    --code-bg: #090d16;
+    --code-text: #e7edf9;
+    --code-control-bg: #26324b;
+    --code-control-border: #52617d;
+    --article-text: #c6d0e3;
+    --success-text: #95e6c4;
+    --success-border: #347d62;
+    --danger-text: #ffb2bd;
+    --danger-border: #8d4551;
+  }
 }
 
 * {
@@ -33,6 +109,8 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  color: var(--ink);
+  background: var(--page-bg);
 }
 
 button,
