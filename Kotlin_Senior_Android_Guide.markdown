@@ -731,16 +731,73 @@ fun interface ClickListener {
 
 ## 11.4. Где возникает boxing?
 
-Частые случаи:
+На JVM есть две разные формы представления числовых и некоторых других значений:
 
-- generic-коллекции с примитивами;
-- nullable primitive: `Int?`;
-- value class в generic/interface/nullable контексте;
-- function types и захваты;
-- vararg;
-- reflection.
+- primitive: `int`, `long`, `double`, `boolean` и другие — само значение без объектной идентичности;
+- reference wrapper: `java.lang.Integer`, `Long`, `Double`, `Boolean` и другие — объект или ссылка на объект.
 
-На Android это важно в частых циклах, UI rendering и обработке больших объёмов данных, но оптимизировать нужно после измерений.
+**Boxing** — переход от primitive к wrapper, например из JVM `int` в `Integer`. **Unboxing** — обратное извлечение primitive из wrapper. В исходном Kotlin эти преобразования чаще всего не записаны явно: компилятор вставляет их там, где этого требует JVM-представление.
+
+Упрощённо сгенерированный bytecode ведёт себя так:
+
+```kotlin
+val boxed: Int? = 42
+val raw: Int = boxed
+```
+
+```java
+Integer boxed = Integer.valueOf(42); // boxing
+int raw = boxed.intValue();          // unboxing
+```
+
+Boxing нужен не для ускорения, а для представления primitive там, где JVM ожидает ссылку на объект. Wrapper, в частности, позволяет хранить `null`, передавать значение как `Object` и использовать его в API, построенном на Java generics.
+
+Частые случаи boxing:
+
+- nullable-тип: `Int?`, когда значению действительно требуется nullable JVM-представление;
+- generic-контекст: `List<Int>`, `Map<Long, Boolean>`, `Array<Int>` или вызов `fun <T> identity(value: T): T`;
+- передача primitive как `Any`, `Any?` или как интерфейса;
+- generic function type, например `(Int) -> Unit`: вызов через `Function1<P1, R>` имеет объектные generic-параметры;
+- reflection и Java API, принимающие `Object`;
+- value class в nullable/generic/interface-контексте или при использовании как другого типа.
+
+Пример generic-границы:
+
+```kotlin
+fun <T> identity(value: T): T = value
+
+val answer: Int = identity(42)
+```
+
+После type erasure JVM-сигнатура `identity` принимает и возвращает `Object`, поэтому `42` упаковывается в `Integer`, а результат распаковывается обратно в `int`.
+
+Важно не смешивать boxing с любой аллокацией:
+
+- `vararg values: Int` представляется как `IntArray` и не обязан боксить элементы;
+- generic `vararg values: T` использует объектный массив, поэтому primitive на такой границе боксится;
+- spread `*array` обычно создаёт копию массива, но эта аллокация сама по себе ещё не означает boxing;
+- захватывающая lambda может создать объект для замыкания, однако boxing primitive зависит от сгенерированной сигнатуры и места использования.
+
+Практическая разница хорошо видна у массивов:
+
+```kotlin
+val boxed: Array<Int> = arrayOf(1, 2, 3) // Integer[]
+val primitive: IntArray = intArrayOf(1, 2, 3) // int[]
+```
+
+Wrapper требует ссылку и объектное представление, поэтому потенциальные последствия boxing:
+
+- дополнительные аллокации и нагрузка на GC;
+- больший расход памяти;
+- дополнительный косвенный доступ по ссылке;
+- худшая cache locality в больших коллекциях;
+- дополнительная операция при unboxing.
+
+`Integer.valueOf` и аналогичные методы могут переиспользовать закешированные wrapper-объекты для части значений, но полагаться на конкретный диапазон кеша и проверять boxed-значения через `===` нельзя. Сравнивать значения следует через `==`.
+
+Unboxing nullable wrapper требует отдельной осторожности: если ссылка равна `null`, вызов вроде `intValue()` невозможен и приводит к NPE. Kotlin обычно защищает это своей системой типов, но риск возвращается на границах platform types, reflection и некорректно аннотированного Java API.
+
+В performance-sensitive коде полезны специализированные представления: `IntArray` вместо `Array<Int>`/`List<Int>`, primitive state API в Compose и primitive-ориентированные структуры данных. Но менять читаемый API только из-за потенциального boxing не стоит: сначала нужно подтвердить проблему профилировщиком, allocation tracking или benchmark. Особенно это актуально для больших коллекций, tight loops, animation/layout hot path и часто вызываемого кода.
 
 ## 11.5. Что компилируется из top-level функций?
 
