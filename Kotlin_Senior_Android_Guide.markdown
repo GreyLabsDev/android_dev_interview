@@ -114,24 +114,231 @@ Nullable и non-null типы различаются на уровне сист�
 
 После проверки типа или `null` компилятор может автоматически рассматривать значение как более узкий тип.
 
+### Когда smart cast работает
+
+Локальный `val` стабилен: после проверки его ссылка не может быть заменена.
+
 ```kotlin
-if (value is String) {
-    println(value.length)
+fun printLength(value: Any?) {
+    if (value is String) {
+        // value автоматически имеет тип String
+        println(value.length)
+    }
 }
 ```
 
-Smart cast возможен, когда компилятор доказывает, что значение не изменится между проверкой и использованием. Он часто недоступен для:
+Проверка на `null` аналогично сужает nullable-тип до non-null:
 
-- `var`-**свойства класса** (для локальной `var` smart cast как раз работает — это частая ловушка в обе стороны);
-- `open`-свойства или свойства с custom getter;
-- свойства другого объекта, которое может измениться конкурентно;
-- локальной `var`, изменяемой в лямбде, которая захватывает её.
+```kotlin
+fun render(name: String?) {
+    if (name != null) {
+        // name имеет тип String
+        println(name.uppercase())
+    }
+}
+```
 
-Решение — сохранить стабильный snapshot в локальный `val`.
+Data-flow analysis учитывает логические операторы, ранний выход и ветки `when`:
+
+```kotlin
+fun handle(value: Any?) {
+    if (value is String && value.isNotBlank()) {
+        println(value.length)
+    }
+
+    if (value !is String) return
+
+    // Из отрицательной проверки можно попасть сюда
+    // только если value имеет тип String.
+    println(value.lowercase())
+}
+```
+
+```kotlin
+fun describe(value: Any): String = when (value) {
+    is String -> "String length = ${value.length}"
+    is List<*> -> "List size = ${value.size}"
+    else -> "Unknown"
+}
+```
+
+Локальная `var` тоже может быть smart-cast, если компилятор видит, что между проверкой и использованием она не изменяется:
+
+```kotlin
+fun consume(input: String?) {
+    var text = input
+
+    if (text != null) {
+        // Работает: после проверки text не переназначается.
+        println(text.length)
+    }
+
+    text = null
+}
+```
+
+Для property типа `val` smart cast возможен только тогда, когда компилятор способен доказать стабильность чтения: property не `open`, не имеет custom getter и доступна для такого анализа в пределах соответствующей области/модуля. Локальный `val` обычно является более очевидной и надёжной границей.
+
+### Когда smart cast не работает
+
+Smart cast невозможен, если повторное чтение теоретически может вернуть другое значение. Классический случай — mutable property:
+
+```kotlin
+class Profile {
+    var nickname: String? = null
+
+    fun printNickname() {
+        if (nickname != null) {
+            // Не компилируется:
+            // smart cast to String is impossible,
+            // because nickname is a mutable property.
+            println(nickname.length)
+        }
+    }
+}
+```
+
+Между проверкой и чтением property мог быть вызван другой код, setter или конкурентная запись. Решение — один раз прочитать значение в локальный стабильный snapshot:
+
+```kotlin
+class Profile {
+    var nickname: String? = null
+
+    fun printNickname() {
+        val currentNickname = nickname
+        if (currentNickname != null) {
+            println(currentNickname.length)
+        }
+    }
+}
+```
+
+Даже `val` не гарантирует одинаковый результат каждого чтения, если property вычисляемая:
+
+```kotlin
+class TokenProvider {
+    val token: String?
+        get() = loadTokenFromStorage()
+
+    fun printToken() {
+        if (token != null) {
+            // Не компилируется: getter вызывается заново
+            // и может вернуть уже другое значение.
+            println(token.length)
+        }
+    }
+}
+```
+
+`open val` также нельзя считать стабильным: override в наследнике может реализовать custom getter.
+
+```kotlin
+open class Response {
+    open val body: Any? = null
+
+    fun printBody() {
+        if (body is String) {
+            // Не компилируется: body — open property.
+            println(body.length)
+        }
+    }
+}
+```
+
+Локальная `var` теряет возможность smart cast, если её захватывает lambda, способная изменить значение:
+
+```kotlin
+fun process(input: String?) {
+    var text = input
+    val clear = { text = null }
+
+    if (text != null) {
+        clear()
+        // Не компилируется и было бы небезопасно:
+        // text уже может быть null.
+        println(text.length)
+    }
+}
+```
+
+Обычная пользовательская функция-предикат тоже не передаёт компилятору знание о типе:
+
+```kotlin
+fun isString(value: Any?): Boolean = value is String
+
+fun printValue(value: Any?) {
+    if (isString(value)) {
+        // Не компилируется: компилятор не выводит из произвольного
+        // Boolean-результата, что value имеет тип String.
+        println(value.length)
+    }
+}
+```
+
+Такой факт можно описать Kotlin contract, но контракт должен точно соответствовать реализации. В обычном коде прямой `is` либо safe cast проще:
+
+```kotlin
+fun printValue(value: Any?) {
+    val text = value as? String ?: return
+    println(text.length)
+}
+```
+
+Итого: smart cast работает не потому, что разработчик «уже проверил» значение, а потому, что data-flow analysis компилятора одновременно доказал проверку типа и стабильность значения до места использования.
 
 ## 2.3. Что такое platform type?
 
 При вызове Java-кода Kotlin часто видит тип с неизвестной nullable-семантикой, условно `String!`. Его можно присвоить как `String` или `String?`, поэтому ответственность переносится на разработчика.
+
+Platform type нельзя явно записать в Kotlin source code: `String!` — обозначение, которое IDE и документация используют для типа, пришедшего с небезопасной платформенной границы. Компилятор разрешает обращаться с ним и как с nullable, и как с non-null значением.
+
+Например, Java-метод не сообщает ничего о nullability:
+
+```java
+public final class JavaUserApi {
+    public static String loadName() {
+        return null;
+    }
+}
+```
+
+В Kotlin результат имеет platform type `String!`:
+
+```kotlin
+val inferredName = JavaUserApi.loadName() // String!
+
+// Разрешено, но при фактическом null возникнет NPE
+// на сгенерированной runtime-проверке.
+val requiredName: String = JavaUserApi.loadName()
+
+// Безопасный и честный выбор, если контракт Java API неизвестен.
+val optionalName: String? = JavaUserApi.loadName()
+```
+
+Главная опасность в том, что platform type разрешено dereference без safe call:
+
+```kotlin
+val name = JavaUserApi.loadName()
+
+// Компилируется, но упадёт, если Java вернула null.
+println(name.length)
+```
+
+Поэтому platform type желательно нормализовать сразу на границе, а не передавать дальше по слоям приложения:
+
+```kotlin
+class UserRepository {
+    fun findNameOrNull(): String? =
+        JavaUserApi.loadName()
+
+    fun requireName(): String =
+        requireNotNull(JavaUserApi.loadName()) {
+            "JavaUserApi returned null name"
+        }
+}
+```
+
+В первом варианте nullable-семантика становится частью Kotlin API. Во втором нарушение внешнего контракта обнаруживается в одном понятном месте с осмысленной ошибкой.
 
 Источники риска:
 
@@ -140,7 +347,66 @@ Smart cast возможен, когда компилятор доказывае�
 - generic-типы из Java;
 - Java-код, нарушающий Kotlin-контракт.
 
-На границе с Java стоит нормализовать nullable-значения и не распространять platform types глубоко в Kotlin-код.
+Platform type может находиться не только на верхнем уровне, но и внутри Java generic:
+
+```java
+public static List<String> loadNames() {
+    return Arrays.asList("Alice", null, "Bob");
+}
+```
+
+Упрощённо Kotlin видит и саму коллекцию, и её элементы как типы с неизвестной nullability. Наивный код может упасть:
+
+```kotlin
+val names = JavaUserApi.loadNames()
+
+for (name in names) {
+    // Компилируется, но null-элемент приводит к NPE.
+    println(name.uppercase())
+}
+```
+
+На внешней границе можно явно выбрать безопасную модель:
+
+```kotlin
+fun loadValidNames(): List<String> =
+    JavaUserApi.loadNames()
+        .orEmpty()
+        .filterNotNull()
+```
+
+Распознанные nullability-аннотации делают контракт точнее:
+
+```java
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+
+public final class AnnotatedApi {
+    @Nullable
+    public static String findName() {
+        return null;
+    }
+
+    @NonNull
+    public static String requireName() {
+        return "Alice";
+    }
+}
+```
+
+Тогда Kotlin обычно видит `findName()` как `String?`, а `requireName()` как `String`. Конкретный набор поддерживаемых аннотаций и строгость диагностики зависят от compiler settings и используемых annotation packages. Аннотация не является runtime-защитой: если Java-реализация нарушила `@NonNull`-контракт, Kotlin-код всё равно может получить NPE.
+
+```kotlin
+val optional: String? = AnnotatedApi.findName()
+val required: String = AnnotatedApi.requireName()
+```
+
+На границе с Java следует:
+
+1. определить реальный контракт по документации, annotations и поведению API;
+2. один раз преобразовать значение в честный `T` или `T?`;
+3. проверить обязательное значение через `requireNotNull`/явную ошибку;
+4. не распространять inferred platform type глубоко в domain и UI слои.
 
 ## 2.4. Чем `?.let {}` отличается от обычной проверки на `null`?
 
@@ -202,7 +468,95 @@ Kotlin следует принципу «закрыто по умолчанию�
 
 Primary constructor находится в заголовке класса и участвует в общей инициализации. Secondary constructor объявляется через `constructor` и обязан прямо или косвенно делегировать primary constructor через `this(...)`, если тот существует.
 
-Для сложного создания объектов обычно предпочтительны factory-функции: у них есть имя, они могут вернуть subtype, кешированный объект или ошибку.
+У primary constructor нет отдельного тела: его код выполняется через property initializers и `init`-блоки в текстовом порядке. Параметр с `val` или `var` одновременно объявляет property. Обычный параметр доступен во время инициализации, но не становится членом объекта:
+
+```kotlin
+class User(
+    rawName: String,       // только параметр конструктора
+    val age: Int,          // read-only property
+    var isActive: Boolean, // mutable property
+) {
+    val name = rawName.trim()
+
+    init {
+        require(name.isNotEmpty()) { "Name must not be blank" }
+        require(age >= 0) { "Age must be non-negative" }
+    }
+
+    fun description(): String = "$name, $age"
+    // rawName здесь использовать нельзя: property с таким именем нет
+}
+```
+
+Ключевое слово `constructor` у primary constructor обычно опускается. Оно требуется, если у конструктора есть annotation или visibility modifier:
+
+```kotlin
+class Session private constructor(
+    val token: String,
+) {
+    companion object {
+        fun authenticated(token: String): Session {
+            require(token.isNotBlank())
+            return Session(token)
+        }
+    }
+}
+```
+
+Secondary constructor удобен, когда действительно нужны разные JVM-конструкторы, например для Java interop или framework API:
+
+```kotlin
+class Connection private constructor(
+    val host: String,
+    val port: Int,
+) {
+    init {
+        require(host.isNotBlank())
+        require(port in 1..65_535)
+        println("init: $host:$port")
+    }
+
+    constructor(host: String) : this(
+        host = host,
+        port = 443,
+    ) {
+        println("secondary constructor body")
+    }
+}
+```
+
+При вызове `Connection("example.com")` сначала вычисляются аргументы `this(...)`, затем выполняются property initializers и `init` primary constructor, и только после этого — тело secondary constructor. Поэтому secondary constructor не может обойти инварианты, проверяемые в `init`.
+
+Если у класса нет primary constructor, каждый secondary constructor должен делегировать конструктору базового класса через `super(...)` либо другому secondary constructor через `this(...)`:
+
+```kotlin
+open class Entity(val id: Long)
+
+class UserEntity : Entity {
+    constructor(id: Long) : super(id)
+
+    constructor(rawId: String) : this(
+        id = rawId.toLong(),
+    )
+}
+```
+
+Часто secondary constructor вообще не нужен: default и named arguments дают более компактный Kotlin API без набора overload:
+
+```kotlin
+class ApiClient(
+    val baseUrl: String,
+    val timeoutMillis: Long = 5_000,
+)
+
+val defaultClient = ApiClient("https://example.com")
+val slowClient = ApiClient(
+    baseUrl = "https://example.com",
+    timeoutMillis = 30_000,
+)
+```
+
+Для сложного создания объектов обычно предпочтительны именованные factory-функции: они объясняют сценарий создания, могут валидировать и преобразовывать входные данные, вернуть subtype, кешированный объект или ошибку. Secondary constructor всегда должен завершиться созданием экземпляра объявленного класса и не имеет собственного имени.
 
 ## 3.4. Что генерирует `data class`?
 
@@ -259,7 +613,118 @@ value class UserId(val value: String)
 - типобезопасность без обязательной аллокации wrapper;
 - защита от смешивания одинаковых примитивных типов.
 
-Boxing всё равно возможен при nullable-использовании, generic-контексте, приведении к интерфейсу и в других случаях. У value class нет обычной ссылочной идентичности.
+### Пример 1. Типобезопасные идентификаторы
+
+Два идентификатора могут иметь одинаковый underlying type, но оставаться разными типами для компилятора:
+
+```kotlin
+@JvmInline
+value class UserId(val value: Long)
+
+@JvmInline
+value class OrderId(val value: Long)
+
+fun loadUser(id: UserId): User = TODO()
+
+val userId = UserId(42)
+val orderId = OrderId(42)
+
+loadUser(userId)  // корректно
+loadUser(orderId) // не компилируется: требуется UserId
+```
+
+Без value classes оба параметра были бы обычными `Long`, и перепутать их можно было бы незаметно.
+
+### Пример 2. Проверка инварианта и вычисляемое свойство
+
+Value class может иметь `init`, функции и properties без дополнительного backing field:
+
+```kotlin
+@JvmInline
+value class Email(val value: String) {
+    init {
+        require('@' in value) { "Invalid email: $value" }
+    }
+
+    val domain: String
+        get() = value.substringAfter('@')
+
+    fun normalized(): Email =
+        Email(value.trim().lowercase())
+}
+
+val email = Email("User@Example.com")
+println(email.domain)       // Example.com
+println(email.normalized()) // Email(value=user@example.com)
+```
+
+Такая проверка гарантирует инвариант для обычного вызова конструктора. Однако внешние framework/serialization/reflection-механизмы нужно оценивать отдельно: они не всегда создают объект тем же путём, что обычный Kotlin-код.
+
+### Пример 3. Единицы измерения и операции
+
+Value class помогает не смешивать числа с разным смыслом и может определять операции своего domain:
+
+```kotlin
+@JvmInline
+value class Milliseconds(val value: Long) {
+    init {
+        require(value >= 0)
+    }
+
+    operator fun plus(other: Milliseconds): Milliseconds =
+        Milliseconds(Math.addExact(value, other.value))
+}
+
+@JvmInline
+value class Bytes(val value: Long)
+
+fun setTimeout(timeout: Milliseconds) = Unit
+
+val connectTimeout = Milliseconds(2_000)
+val readTimeout = Milliseconds(5_000)
+val totalTimeout = connectTimeout + readTimeout
+
+setTimeout(totalTimeout) // корректно
+// setTimeout(Bytes(7_000)) — не компилируется
+```
+
+Здесь тип выражает семантику лучше, чем суффикс в имени обычного `Long`. `Math.addExact` дополнительно обнаруживает overflow вместо тихого переполнения.
+
+### Пример 4. Где появляется boxing
+
+Компилятор старается использовать underlying type, когда значение известно именно как value class:
+
+```kotlin
+@JvmInline
+value class Counter(val value: Int)
+
+fun increment(counter: Counter): Counter =
+    Counter(counter.value + 1)
+
+val next = increment(Counter(10))
+```
+
+На JVM такой путь может быть представлен обычными `int` без отдельного объекта `Counter`. Но wrapper требуется или может потребоваться на границе с другим представлением:
+
+```kotlin
+interface Loggable {
+    fun asLogValue(): String
+}
+
+@JvmInline
+value class TraceId(val value: Long) : Loggable {
+    override fun asLogValue(): String = value.toString()
+}
+
+val nullable: TraceId? = TraceId(10)       // nullable-контекст
+val list: List<TraceId> = listOf(TraceId(10)) // generic-контекст
+val any: Any = TraceId(10)                 // использование как Any
+val loggable: Loggable = TraceId(10)       // использование как интерфейс
+```
+
+В этих случаях значение должно соответствовать объектной JVM-сигнатуре, поэтому возникает boxing. Конкретное runtime-представление нужно проверять по bytecode и профилированию, а не предполагать, что `value class` гарантированно устраняет все аллокации.
+
+Value class содержит ровно одно underlying property в primary constructor, не имеет обычной ссылочной идентичности и не должна использоваться с расчётом на `===`. На JVM имена функций с value-class параметрами могут быть mangled, что также следует учитывать при проектировании Java-facing API.
 
 ## 3.8. Чем композиция лучше наследования?
 
@@ -293,7 +758,148 @@ Boxing всё равно возможен при nullable-использован
 
 `equals` должен быть рефлексивным, симметричным, транзитивным, согласованным и возвращать `false` для `null`. Равные объекты обязаны иметь одинаковый `hashCode`.
 
+Связь между `equals` и `hashCode` направленная:
+
+- если `a == b`, то `a.hashCode() == b.hashCode()` обязательно;
+- если hash codes разные, объекты точно не равны при корректной реализации контракта;
+- если hash codes одинаковые, объекты **не обязательно** равны: collision допустим;
+- если `a != b`, их hash codes могут быть как разными, так и одинаковыми.
+
+### Пример 1. Равные объекты имеют одинаковый hash code
+
+`data class` генерирует согласованные `equals` и `hashCode` по properties primary constructor:
+
+```kotlin
+data class UserKey(
+    val tenantId: Long,
+    val userId: Long,
+)
+
+val first = UserKey(tenantId = 10, userId = 42)
+val second = UserKey(tenantId = 10, userId = 42)
+
+check(first !== second)                 // разные экземпляры
+check(first == second)                  // структурно равны
+check(first.hashCode() == second.hashCode()) // обязательно
+```
+
+Разные ссылки не мешают объектам быть равными по значению. Именно поэтому `HashMap` может найти значение по новому экземпляру эквивалентного ключа:
+
+```kotlin
+val users = hashMapOf(first to "Alice")
+
+check(users[second] == "Alice")
+```
+
+### Пример 2. Одинаковый hash code не означает равенство
+
+Hash code не обязан быть уникальным. Эта реализация корректна по контракту, хотя намеренно создаёт collision для всех экземпляров:
+
+```kotlin
+class CollisionKey(
+    private val id: Int,
+) {
+    override fun equals(other: Any?): Boolean =
+        other is CollisionKey && id == other.id
+
+    override fun hashCode(): Int = 0
+}
+
+val first = CollisionKey(1)
+val second = CollisionKey(2)
+
+check(first != second)
+check(first.hashCode() == second.hashCode())
+```
+
+`HashSet` и `HashMap` сначала используют hash code для выбора bucket, а затем вызывают `equals`, чтобы различить элементы внутри bucket:
+
+```kotlin
+val keys = hashSetOf(
+    CollisionKey(1),
+    CollisionKey(2),
+)
+
+check(keys.size == 2)
+```
+
+Контракт не нарушен, но качество hash-функции плохое: большое число collision ухудшает производительность hash-коллекций.
+
+### Пример 3. Нарушение контракта ломает поиск в `HashSet`
+
+Ошибка возникает, если `equals` и `hashCode` используют разные наборы значимых полей:
+
+```kotlin
+class BrokenUser(
+    private val id: Int,
+    private val name: String,
+) {
+    override fun equals(other: Any?): Boolean =
+        other is BrokenUser && id == other.id
+
+    // Ошибка: equals считает объекты с одинаковым id равными,
+    // а hashCode дополнительно учитывает name.
+    override fun hashCode(): Int =
+        31 * id + name.hashCode()
+}
+
+val alice = BrokenUser(id = 1, name = "Alice")
+val renamed = BrokenUser(id = 1, name = "Alicia")
+
+check(alice == renamed)
+check(alice.hashCode() != renamed.hashCode()) // контракт нарушен
+
+val users = hashSetOf(alice)
+check(renamed !in users) // HashSet ищет в другом bucket
+```
+
+Если поле участвует в `equals`, оно должно согласованно участвовать и в `hashCode`. Обычно оба метода строят по одному набору immutable state.
+
+### Пример 4. Mutable-ключ теряется после изменения
+
 Нельзя менять поля, участвующие в `equals/hashCode`, пока объект является ключом `HashMap` или элементом `HashSet`: коллекция может перестать его находить.
+
+```kotlin
+data class MutableKey(
+    var id: Int,
+)
+
+val key = MutableKey(1)
+val values = hashMapOf(key to "stored")
+
+check(values[key] == "stored")
+
+key.id = 2 // изменились equals и hashCode уже добавленного ключа
+
+check(values[key] == null)
+check(values.keys.first() === key) // объект физически всё ещё внутри map
+```
+
+`HashMap` сохранил ключ в bucket, вычисленный для `id = 1`, а после изменения ищет его по hash для `id = 2`. Поэтому ключи hash-коллекций должны быть immutable по полям, участвующим в равенстве.
+
+Практический шаблон ручной реализации:
+
+```kotlin
+class ProductKey(
+    private val shopId: Long,
+    private val sku: String,
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is ProductKey) return false
+
+        return shopId == other.shopId && sku == other.sku
+    }
+
+    override fun hashCode(): Int {
+        var result = shopId.hashCode()
+        result = 31 * result + sku.hashCode()
+        return result
+    }
+}
+```
+
+Здесь identity-проверка — быстрый путь, type check защищает симметрию, а оба метода используют одинаковые поля `shopId` и `sku`.
 
 ## 4.3. Как работает destructuring?
 
@@ -399,9 +1005,196 @@ Member с подходящей сигнатурой имеет приорите�
 
 ## 5.9. `infix`, `operator`, `tailrec`
 
-- `infix` разрешает вызов без точки и скобок, но имеет ограничения на сигнатуру и приоритет.
-- `operator` связывает функцию с операторным синтаксисом, например `plus`, `get`, `contains`.
-- `tailrec` просит компилятор преобразовать хвостовую рекурсию в цикл. Рекурсивный вызов должен быть последней операцией; `open`-функции и рекурсия внутри `try/catch/finally` могут не оптимизироваться.
+### `infix`
+
+`infix` разрешает вызывать member или extension-функцию с одним параметром без точки и скобок:
+
+```kotlin
+data class Header(
+    val name: String,
+    val value: String,
+)
+
+infix fun String.withValue(value: String): Header =
+    Header(name = this, value = value)
+
+val authorization =
+    "Authorization" withValue "Bearer token"
+
+// Эквивалентный обычный вызов:
+val contentType =
+    "Content-Type".withValue("application/json")
+```
+
+Infix-функция должна:
+
+- быть member или extension;
+- иметь ровно один обязательный value parameter;
+- не использовать для него `vararg`;
+- не задавать ему default value.
+
+Стандартная функция `to` тоже является infix:
+
+```kotlin
+val entry: Pair<String, Int> = "retryCount" to 3
+val map = mapOf(
+    "connectTimeout" to 5_000,
+    "readTimeout" to 15_000,
+)
+```
+
+У infix-вызовов собственные правила приоритета. Они имеют меньший приоритет, чем арифметические операторы, range и casts, поэтому сложное выражение лучше группировать явно:
+
+```kotlin
+val shifted = 1 shl (2 + 1)
+val range = 0 until (10 * 2)
+```
+
+`infix` полезен, если выражение читается как естественная бинарная операция. Использовать его только ради «DSL-похожего» синтаксиса не стоит: обычный именованный вызов часто яснее.
+
+### `operator`
+
+`operator` связывает функцию с предусмотренным языком операторным синтаксисом. Имя и сигнатура должны соответствовать конкретному соглашению Kotlin:
+
+```kotlin
+data class Vector2(
+    val x: Int,
+    val y: Int,
+) {
+    operator fun plus(other: Vector2): Vector2 =
+        Vector2(
+            x = x + other.x,
+            y = y + other.y,
+        )
+
+    operator fun unaryMinus(): Vector2 =
+        Vector2(x = -x, y = -y)
+
+    operator fun get(index: Int): Int = when (index) {
+        0 -> x
+        1 -> y
+        else -> throw IndexOutOfBoundsException("index=$index")
+    }
+}
+
+val first = Vector2(10, 20)
+val second = Vector2(3, 4)
+
+val sum = first + second // first.plus(second)
+val inverted = -first   // first.unaryMinus()
+val x = first[0]        // first.get(0)
+```
+
+`contains` управляет оператором `in`:
+
+```kotlin
+data class ClosedInterval(
+    val start: Int,
+    val endInclusive: Int,
+) {
+    init {
+        require(start <= endInclusive)
+    }
+
+    operator fun contains(value: Int): Boolean =
+        value in start..endInclusive
+}
+
+val supported = ClosedInterval(21, 35)
+
+check(30 in supported)  // supported.contains(30)
+check(18 !in supported) // !supported.contains(18)
+```
+
+Другие частые conventions:
+
+- `compareTo` — `<`, `<=`, `>`, `>=`;
+- `get` / `set` — `value[index]`;
+- `invoke` — вызов объекта как функции: `value()`;
+- `iterator` — участие в `for`;
+- `inc` / `dec` — `++` и `--`;
+- `rangeTo` — оператор `..`.
+
+Оператор должен сохранять ожидаемый смысл. Например, `plus` для двух денежных значений естественен, а `plus` для запуска сетевого запроса скрывает side effect и делает API обманчивым.
+
+### `tailrec`
+
+`tailrec` просит компилятор преобразовать хвостовую рекурсию в цикл. Это позволяет сохранить рекурсивную форму исходного кода без роста call stack:
+
+```kotlin
+tailrec fun gcd(a: Int, b: Int): Int =
+    if (b == 0) {
+        kotlin.math.abs(a)
+    } else {
+        gcd(b, a % b)
+    }
+
+check(gcd(48, 18) == 6)
+```
+
+Вызов `gcd(...)` является последней операцией ветки: после возврата его результата функция больше ничего не вычисляет.
+
+Факториал становится tail-recursive через accumulator:
+
+```kotlin
+fun factorial(number: Int): Long {
+    require(number >= 0)
+
+    tailrec fun loop(
+        current: Int,
+        accumulator: Long,
+    ): Long =
+        if (current <= 1) {
+            accumulator
+        } else {
+            loop(
+                current = current - 1,
+                accumulator = Math.multiplyExact(
+                    accumulator,
+                    current.toLong(),
+                ),
+            )
+        }
+
+    return loop(
+        current = number,
+        accumulator = 1,
+    )
+}
+
+check(factorial(5) == 120L)
+```
+
+Этот вариант не является хвостовой рекурсией:
+
+```kotlin
+fun factorialNotTailRecursive(number: Int): Long =
+    if (number <= 1) {
+        1
+    } else {
+        number.toLong() * factorialNotTailRecursive(number - 1)
+    }
+```
+
+После рекурсивного вызова ещё нужно выполнить умножение, поэтому стек предыдущих вызовов должен сохраняться. Добавление `tailrec` не сделает произвольную рекурсию хвостовой: компилятор выдаст предупреждение и не применит оптимизацию к такому call site.
+
+Tail recursion также не получается, если нужно объединить результаты нескольких рекурсивных вызовов, как при обычном обходе бинарного дерева:
+
+```kotlin
+data class Node(
+    val left: Node? = null,
+    val right: Node? = null,
+)
+
+fun size(node: Node?): Int =
+    if (node == null) {
+        0
+    } else {
+        1 + size(node.left) + size(node.right)
+    }
+```
+
+Здесь после обоих вызовов выполняется сложение. Для очень глубокого дерева безопаснее явный stack/queue. `open`-функции и рекурсивные вызовы внутри `try`/`catch`/`finally` также могут не оптимизироваться, поэтому отсутствие stack growth следует подтверждать условиями tail-call и, при необходимости, bytecode.
 
 ---
 
@@ -453,34 +1246,329 @@ Variance отвечает не на вопрос «каким типом явл�
 
 ## 7.1. Почему `MutableList<Dog>` не является `MutableList<Animal>`?
 
-Если бы это было разрешено, в список собак можно было бы добавить кошку. Поэтому изменяемые generic-типы обычно инвариантны.
+Представим простую иерархию:
 
-Неизменяемый производитель может быть ковариантным: `List<Dog>` совместим с `List<Animal>`, потому что `List` объявлен как `List<out E>`.
+```kotlin
+open class Animal(
+    val name: String,
+)
+
+class Dog(name: String) : Animal(name)
+class Cat(name: String) : Animal(name)
+```
+
+`Dog` является `Animal`, но из этого не следует, что `MutableList<Dog>` является `MutableList<Animal>`. Mutable-список умеет не только отдавать, но и принимать элементы:
+
+```kotlin
+val dogs: MutableList<Dog> =
+    mutableListOf(Dog("Rex"))
+
+// Не компилируется:
+val animals: MutableList<Animal> = dogs
+```
+
+Если бы присваивание разрешили, через ссылку `animals` можно было бы добавить кошку в настоящий список собак:
+
+```kotlin
+// Гипотетический небезопасный код:
+val animals: MutableList<Animal> = dogs
+animals.add(Cat("Barsik"))
+
+// dogs теперь содержал бы Cat, хотя обещает хранить только Dog.
+val dog: Dog = dogs[1]
+```
+
+Поэтому `MutableList<T>` инвариантен: `MutableList<Dog>` и `MutableList<Animal>` считаются разными несовместимыми типами.
+
+Это видно и при передаче аргумента в функцию:
+
+```kotlin
+fun addCat(animals: MutableList<Animal>) {
+    animals += Cat("Barsik")
+}
+
+val dogs = mutableListOf(Dog("Rex"))
+
+// Не компилируется, иначе addCat добавила бы Cat в список Dog:
+addCat(dogs)
+```
+
+Но прочитать собак как животных безопасно. Read-only интерфейс `List` не позволяет добавить через эту ссылку новый элемент, поэтому он ковариантен:
+
+```kotlin
+val dogs: MutableList<Dog> =
+    mutableListOf(Dog("Rex"), Dog("Lucky"))
+
+val animals: List<Animal> = dogs // работает
+
+for (animal in animals) {
+    println(animal.name)
+}
+```
+
+`List` в Kotlin означает read-only view, а не гарантированно immutable объект: исходный `dogs` всё ещё можно изменить через mutable-ссылку. Однако через `animals` нельзя записать `Cat`, поэтому такое преобразование типобезопасно.
+
+Коротко:
+
+- только читать `T` — преобразование к более общему типу может быть безопасно;
+- читать и записывать `T` — тип обычно должен оставаться инвариантным.
 
 ## 7.2. `out` и `in`
 
-- `out T` — covariance, тип в основном производится: `Producer<Dog>` можно использовать как `Producer<Animal>`.
-- `in T` — contravariance, тип в основном потребляется: `Consumer<Animal>` можно использовать как `Consumer<Dog>`.
+Самая простая мнемоника:
 
-Мнемоника PECS: Producer Extends (`out`), Consumer Super (`in`).
+- `out T` — объект **отдаёт** значения типа `T`;
+- `in T` — объект **принимает** значения типа `T`.
+
+### `out`: производитель значений
+
+```kotlin
+interface Producer<out T> {
+    fun produce(): T
+}
+
+class DogProducer : Producer<Dog> {
+    override fun produce(): Dog =
+        Dog("Rex")
+}
+```
+
+Producer собак можно использовать там, где нужен producer животных: всё, что он вернёт, точно является `Animal`.
+
+```kotlin
+val dogProducer: Producer<Dog> = DogProducer()
+val animalProducer: Producer<Animal> = dogProducer
+
+val animal: Animal = animalProducer.produce()
+```
+
+Ключевое слово `out` разрешает `T` в позициях результата, но запрещает небезопасный приём `T`:
+
+```kotlin
+interface Producer<out T> {
+    fun produce(): T
+
+    // Не компилируется: T объявлен как out,
+    // но используется во входном параметре.
+    // fun consume(value: T)
+}
+```
+
+Иначе после присваивания `Producer<Dog>` к `Producer<Animal>` кто-то мог бы передать в него `Cat`.
+
+Практический стандартный пример — `List<out E>`:
+
+```kotlin
+fun printAnimals(animals: List<Animal>) {
+    animals.forEach { println(it.name) }
+}
+
+val dogs: List<Dog> = listOf(
+    Dog("Rex"),
+    Dog("Lucky"),
+)
+
+printAnimals(dogs)
+```
+
+### `in`: потребитель значений
+
+```kotlin
+fun interface Consumer<in T> {
+    fun consume(value: T)
+}
+
+class AnimalLogger : Consumer<Animal> {
+    override fun consume(value: Animal) {
+        println("Animal: ${value.name}")
+    }
+}
+```
+
+Consumer любых животных можно использовать как consumer собак: если объект умеет принять любой `Animal`, то `Dog` он тоже примет.
+
+```kotlin
+val animalConsumer: Consumer<Animal> = AnimalLogger()
+val dogConsumer: Consumer<Dog> = animalConsumer
+
+dogConsumer.consume(Dog("Rex"))
+```
+
+Направление присваивания выглядит обратным по сравнению с наследованием:
+
+```kotlin
+// Animal — supertype для Dog,
+// но Consumer<Animal> является subtype для Consumer<Dog>.
+val dogConsumer: Consumer<Dog> =
+    Consumer<Animal> { animal ->
+        println(animal.name)
+    }
+```
+
+Из `Consumer<in T>` нельзя безопасно получить `T`: реальный объект может быть consumer более общего типа. Результат чтения без дополнительных знаний доступен только как `Any?`.
+
+Практический пример — `Comparator<in T>`:
+
+```kotlin
+val animalComparator: Comparator<Animal> =
+    compareBy { it.name }
+
+val dogs = listOf(
+    Dog("Rex"),
+    Dog("Lucky"),
+)
+
+val sortedDogs: List<Dog> =
+    dogs.sortedWith(animalComparator)
+```
+
+Comparator, умеющий сравнивать любых животных, подходит и для списка собак.
+
+Итоговая таблица в словах:
+
+- `Producer<Dog>` → `Producer<Animal>` благодаря `out`;
+- `Consumer<Animal>` → `Consumer<Dog>` благодаря `in`;
+- mutable-контейнер одновременно producer и consumer, поэтому обычно не может быть ни `out`, ни `in`.
+
+Java-мнемоника PECS выражает ту же идею: Producer Extends, Consumer Super. В Kotlin ей соответствуют `out` и `in`.
 
 ## 7.3. Declaration-site и use-site variance
 
-Declaration-site:
+Разница заключается в том, **где** задаётся правило variance:
+
+- declaration-site — один раз в объявлении generic-типа;
+- use-site — только для конкретного параметра, переменной или вызова.
+
+### Declaration-site variance
+
+Автор generic-типа заранее знает, что тот всегда производит или всегда потребляет `T`, и ставит `out`/`in` у параметра типа:
 
 ```kotlin
 interface Source<out T> {
     fun next(): T
 }
+
+fun interface Sink<in T> {
+    fun accept(value: T)
+}
 ```
 
-Use-site projection:
+Правило действует при каждом использовании этих интерфейсов:
 
 ```kotlin
-fun copy(from: Array<out Any>, to: Array<in Any>) { /* ... */ }
+class DogSource : Source<Dog> {
+    override fun next(): Dog =
+        Dog("Rex")
+}
+
+class AnimalSink : Sink<Animal> {
+    override fun accept(value: Animal) {
+        println(value.name)
+    }
+}
+
+val animalSource: Source<Animal> = DogSource()
+val dogSink: Sink<Dog> = AnimalSink()
+
+val animal: Animal = animalSource.next()
+dogSink.accept(Dog("Lucky"))
 ```
 
-Проекция ограничивает допустимые операции для конкретного использования инвариантного типа.
+`Source` всегда только отдаёт `T`, поэтому variance удобно объявить внутри самого API. Всем вызывающим не нужно повторять `out`.
+
+### Use-site variance
+
+Иногда generic-класс по своей природе инвариантен, потому что умеет и читать, и писать. Например, `Array<T>` содержит `get` и `set`. Но конкретной функции может требоваться только часть этих возможностей.
+
+Use-site projection временно ограничивает доступные операции для одной ссылки:
+
+```kotlin
+fun printAnimals(
+    animals: MutableList<out Animal>,
+) {
+    val first: Animal = animals.first() // читать безопасно
+    println(first.name)
+
+    // Не компилируется: реальный список может быть MutableList<Dog>,
+    // поэтому добавлять произвольного Animal нельзя.
+    // animals.add(Cat("Barsik"))
+}
+
+val dogs = mutableListOf(
+    Dog("Rex"),
+    Dog("Lucky"),
+)
+
+printAnimals(dogs)
+```
+
+`MutableList<out Animal>` означает: «это список некоторого неизвестного подтипа `Animal`». Читать элементы можно как `Animal`, а записывать нельзя, потому что точный тип элемента неизвестен.
+
+Проекция `in` решает обратную задачу:
+
+```kotlin
+fun addDefaultDog(
+    destination: MutableList<in Dog>,
+) {
+    destination.add(Dog("Default")) // Dog записывать безопасно
+
+    // При чтении точный тип неизвестен: это может быть список Animal или Any.
+    val first: Any? = destination.firstOrNull()
+    println(first)
+}
+
+val animals = mutableListOf<Animal>(
+    Cat("Barsik"),
+)
+
+addDefaultDog(animals)
+```
+
+`MutableList<in Dog>` означает: «список `Dog` либо какого-то supertype для `Dog`». В него безопасно добавить собаку, но прочитать значение как `Dog` нельзя.
+
+### Пример копирования массивов
+
+`Array<T>` инвариантен, однако функция копирования использует исходный массив только как producer, а целевой — только как consumer:
+
+```kotlin
+fun <T> copy(
+    from: Array<out T>,
+    to: Array<in T>,
+) {
+    require(to.size >= from.size)
+
+    for (index in from.indices) {
+        to[index] = from[index]
+    }
+}
+
+val dogs: Array<Dog> = arrayOf(
+    Dog("Rex"),
+    Dog("Lucky"),
+)
+
+val animals: Array<Animal?> =
+    arrayOfNulls(size = dogs.size)
+
+copy(
+    from = dogs,
+    to = animals,
+)
+```
+
+Здесь:
+
+- `Array<out T>` разрешает получать `T`, но запрещает запись;
+- `Array<in T>` разрешает записывать `T`, но чтение даёт только `Any?`;
+- один и тот же `T` связывает тип источника и назначения.
+
+Проекция меняет только compile-time view ссылки. Сам `MutableList` или `Array` не преобразуется в новый объект и не становится immutable в runtime.
+
+Практическое правило:
+
+- тип всегда producer/consumer — variance обычно задаётся на declaration-site;
+- ограничение нужно одной функции — используйте use-site projection;
+- тип одновременно полноценно читает и пишет `T` — оставляйте его инвариантным.
 
 ## 7.4. Что такое star projection `Foo<*>`?
 
