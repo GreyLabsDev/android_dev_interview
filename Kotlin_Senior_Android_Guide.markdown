@@ -1778,7 +1778,111 @@ suspend fun load(): Result<Data> = try {
 
 Contracts сообщают компилятору дополнительные факты о функции: например, «если функция вернула `true`, аргумент не `null`» или «лямбда вызывается ровно один раз». Это улучшает smart casts и анализ.
 
-API контрактов требует осторожности и opt-in в тех частях, которые остаются experimental. Неверный контракт обманывает компилятор и может сделать код небезопасным.
+Контракт не выполняет проверку и не меняет runtime-поведение функции. Это обещание компилятору о связи между входными данными, результатом и вызовами lambda.
+
+### Пример 1. Smart cast после boolean-проверки
+
+Без контракта компилятор не знает, что произвольная функция `isValidName` проверяет аргумент на `null`. Контракт описывает это явно:
+
+```kotlin
+import kotlin.contracts.ExperimentalContracts
+import kotlin.contracts.contract
+
+@OptIn(ExperimentalContracts::class)
+fun isValidName(value: String?): Boolean {
+    contract {
+        returns(true) implies (value != null)
+    }
+
+    return !value.isNullOrBlank()
+}
+
+fun printName(name: String?) {
+    if (isValidName(name)) {
+        // Благодаря contract name smart-cast к String.
+        println(name.uppercase())
+    }
+}
+```
+
+Выражение читается так: «если функция вернула `true`, то `value != null`». Контракт не обещает обратного: при `false` компилятор не обязан делать дополнительный вывод.
+
+### Пример 2. Проверка типа или исключение
+
+`returns()` означает, что функция завершилась нормально, не бросив исключение:
+
+```kotlin
+import kotlin.contracts.ExperimentalContracts
+import kotlin.contracts.contract
+
+@OptIn(ExperimentalContracts::class)
+fun requireString(value: Any?) {
+    contract {
+        returns() implies (value is String)
+    }
+
+    require(value is String) {
+        "Expected String, got ${value?.javaClass?.name}"
+    }
+}
+
+fun printLength(value: Any?) {
+    requireString(value)
+
+    // Если выполнение продолжилось, value имеет тип String.
+    println(value.length)
+}
+```
+
+Это похоже на поведение стандартных `requireNotNull` и `checkNotNull`: успешный возврат сообщает data-flow analysis дополнительный факт.
+
+### Пример 3. Lambda вызывается ровно один раз
+
+`callsInPlace` описывает число вызовов lambda. `EXACTLY_ONCE` позволяет компилятору анализировать definite assignment:
+
+```kotlin
+import kotlin.contracts.ExperimentalContracts
+import kotlin.contracts.InvocationKind
+import kotlin.contracts.contract
+
+@OptIn(ExperimentalContracts::class)
+inline fun <T> runExactlyOnce(
+    block: () -> T,
+): T {
+    contract {
+        callsInPlace(
+            block,
+            InvocationKind.EXACTLY_ONCE,
+        )
+    }
+
+    return block()
+}
+
+fun createMessage(): String {
+    val message: String
+
+    runExactlyOnce {
+        message = "Ready"
+    }
+
+    // Компилятор знает, что message уже инициализирован.
+    return message
+}
+```
+
+Основные `InvocationKind`:
+
+- `EXACTLY_ONCE` — ровно один вызов;
+- `AT_LEAST_ONCE` — один или больше;
+- `AT_MOST_ONCE` — ноль или один;
+- `UNKNOWN` — число вызовов неизвестно.
+
+Вызов `contract { ... }` должен находиться в начале тела функции. Допустимые условия ограничены: обычно это проверки `null`, `is` и их логические комбинации, связанные с параметрами функции.
+
+API контрактов требует осторожности и opt-in в тех частях, которые остаются experimental. Компилятор доверяет декларации, но не доказывает, что реализация ей соответствует. Например, контракт `returns() implies (value != null)` будет ложным, если функция способна нормально вернуться при `null`; последующий smart cast тогда станет небезопасным.
+
+Практическое правило: contracts полезны для небольших низкоуровневых validation/control-flow функций и библиотечных API. Не стоит добавлять их к обычной business-функции только ради устранения одной локальной проверки — прямой `if`, `requireNotNull` или явный return type обычно понятнее.
 
 ---
 
