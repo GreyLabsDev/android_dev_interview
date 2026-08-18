@@ -135,6 +135,30 @@ fun Greeting(
 
 Это концептуальная модель. Конкретные имена, флаги и формат generated code являются implementation detail.
 
+### Простая схема: что происходит на вызове composable
+
+```text
+Вызов Greeting("Anna")
+        │
+        ▼
+startRestartGroup(key)        // "открыли карточку для этого места в дереве"
+        │
+        ▼
+calculateDirtyFlags(name)     // сравнили новое значение name со старым
+        │
+        ▼
+   изменилось? ──нет──▶ skipToEndGroup()   // тело функции НЕ выполняется повторно
+        │
+       да
+        ▼
+выполнить тело: Text(name, ...)
+        │
+        ▼
+endRestartGroup()              // "закрыли карточку", запомнили lambda для будущего перезапуска
+```
+
+Смысл в двух словах: компилятор оборачивает функцию в блок «есть ли смысл выполнять тело заново», а не выполняет тело безусловно. Разработчик пишет обычный Kotlin-код — вся эта обвязка генерируется автоматически и не видна в исходниках.
+
 ## 2.2. Зачем changed/dirty masks?
 
 Маски передают информацию об аргументах:
@@ -148,6 +172,24 @@ fun Greeting(
 
 Dirty mask относится к конкретному вызову и не означает, что объект глобально «грязный». Snapshot invalidation и сравнение параметров — связанные, но разные механизмы.
 
+**Простыми словами:** представьте, что перед вызовом функции родитель прикладывает стикер к каждому аргументу: «этот точно не изменился», «этот новый», «этот всегда один и тот же (constant)». Функции не нужно самой сравнивать значения — она читает стикеры и на основании этого решает: можно скипнуть тело целиком или нет.
+
+```kotlin
+@Composable
+fun Greeting(name: String) { // допустим, вызывается повторно с тем же name
+    Text("Hello, $name")
+}
+
+// Компилятор генерирует примерно такую проверку (упрощённо):
+// if (изменился name == false && composer.skipping) {
+//     composer.skipToEndGroup() // Text(...) не вызывается вообще
+// } else {
+//     Text("Hello, $name")
+// }
+```
+
+Если `name` не менялся между recomposition — тело `Greeting` не выполнится вовсе, `Text` не будет вызван, кадр не перерисуется из-за этого composable.
+
 ## 2.3. Restartable и skippable — одно и то же?
 
 Нет.
@@ -158,6 +200,18 @@ Dirty mask относится к конкретному вызову и не о�
 - Non-skippable функция выполняется, если её parent дошёл до вызова.
 
 Большинство обычных composables компилятор делает restartable. Аннотации вроде `@NonRestartableComposable` и `@NonSkippableComposable` — инструменты узкой оптимизации, а не стандарт для прикладного кода.
+
+**Простая аналогия:** restartable — это «есть кнопка перезапуска именно для этого куска» (можно перезапустить `Counter`, не трогая весь экран). Skippable — это «кнопку можно вообще не нажимать, если ничего не изменилось».
+
+```kotlin
+@Composable
+fun Screen(state: ScreenState) {   // restartable: у него есть restart scope
+    Header()                        // skippable: без параметров, можно скипнуть почти всегда
+    Counter(state.count)            // restartable + skippable: перезапустится только если count изменился
+}
+```
+
+Если `state.count` не менялся, `Counter` будет пропущен (skip). Если менялся — перезапустится только `Counter`, а `Header` не тронут вообще, так как он не зависит от `state`.
 
 ## 2.4. Что такое `Composer`, `Recomposer` и `Applier`?
 
@@ -179,6 +233,28 @@ Dirty mask относится к конкретному вызову и не о�
 
 `Applier` применяет рассчитанные операции к целевому дереву. Compose Runtime не привязан только к Android UI; конкретный UI backend предоставляет свой способ применения nodes.
 
+**Простыми словами**, роли можно представить как три должности на «стройке UI»:
+
+```text
+Composer   — прораб, который сверяет новый план со старым и решает, что менять
+Recomposer — диспетчер, который получает заявки "что-то изменилось" и планирует работу
+Applier    — рабочий, который непосредственно вносит изменения в дерево (Android View/LayoutNode)
+```
+
+```text
+изменился state
+      │
+      ▼
+Recomposer получил invalidation → запланировал recomposition
+      │
+      ▼
+Composer выполнил нужные composable заново, сравнил со старой Composition,
+построил список изменений (change list)
+      │
+      ▼
+Applier применил change list к реальному UI-дереву (LayoutNode/View)
+```
+
 ## 2.5. Что хранится в SlotTable?
 
 SlotTable — компактное side storage Composition:
@@ -195,6 +271,21 @@ SlotTable — компактное side storage Composition:
 
 `remember` привязан не к имени локальной переменной, а к логической позиции group/slot.
 
+**Простая аналогия:** SlotTable — это таблица (или плоский массив) со «ячейками», пронумерованными по порядку вызовов, а не по именам переменных.
+
+```kotlin
+@Composable
+fun Example(showDetails: Boolean) {
+    val a = remember { "A" }         // slot 0
+    if (showDetails) {
+        val b = remember { "B" }     // slot 1 (существует, только пока showDetails == true)
+    }
+    val c = remember { "C" }         // slot 2
+}
+```
+
+Если `showDetails` станет `false`, а затем снова `true`, значение `b` будет создано заново — Compose не помнит его "по имени переменной", он помнит структуру групп в SlotTable, и группа для `b` была разрушена при выходе из `if`.
+
 ## 2.6. Что такое RecomposeScope?
 
 Это потенциальная точка входа для повторного выполнения restart group.
@@ -208,6 +299,21 @@ SlotTable — компактное side storage Composition:
 5. зависимости записываются заново.
 
 Зависимости динамические: если новая ветка больше не читает state, соответствующая связь должна исчезнуть.
+
+**Пример на коде:**
+
+```kotlin
+@Composable
+fun Counter() {
+    var count by remember { mutableIntStateOf(0) } // RecomposeScope этой функции читает count
+
+    Button(onClick = { count++ }) { // запись в count при клике
+        Text("Count: $count")       // чтение count регистрирует зависимость scope → count
+    }
+}
+```
+
+Пошагово: при первом выполнении `Counter` runtime запоминает «этот scope читал `count`». При клике `count++` меняет snapshot state, runtime находит все scope, зависящие от `count`, помечает их invalid и просит `Recomposer` перезапустить именно `Counter` (а не весь экран). После перезапуска зависимость `scope → count` регистрируется заново — если бы в новой версии `count` больше не читался (например, ветка `if` изменилась), связь исчезла бы.
 
 ---
 
@@ -310,7 +416,18 @@ fun Screen(state: ScreenState) {
 
 В новых версиях Compose Runtime `retain` дополняет `remember` и `rememberSaveable`: значение может пережить временный выход из hierarchy без сериализации. По lifetime оно ближе к короткоживущему retained state, но не является durable storage и не переживает process death как сохранённые данные.
 
-Нужно проверять доступность и контракт в версии Runtime проекта. Для screen business state стандартными владельцами по-прежнему являются `ViewModel`, `SavedStateHandle` и data layer.
+Нужно проверять доступность и контракт в версии Runtime проекта.
+
+```kotlin
+@Composable
+fun ExpensiveContent() {
+    // обычный remember теряет значение, когда узел временно покидает Composition
+    // (например, скрыт в свёрнутом LazyColumn без saveable-механизма)
+    val expensiveState = retain { computeExpensiveState() }
+}
+```
+
+Для screen business state стандартными владельцами по-прежнему являются `ViewModel`, `SavedStateHandle` и data layer.
 
 ---
 
@@ -347,6 +464,24 @@ Runtime использует read/write observers:
 
 Snapshots не делают произвольный object graph immutable и не устраняют все data races внешнего кода.
 
+**Пример изоляции:**
+
+```kotlin
+var count by mutableIntStateOf(0)
+
+val snapshot = Snapshot.takeSnapshot()
+try {
+    count = 42                       // изменение вне snapshot, снаружи от него
+    snapshot.enter {
+        println(count)               // snapshot всё ещё видит старое значение (0), а не 42
+    }
+} finally {
+    snapshot.dispose()
+}
+```
+
+Mutable snapshot, наоборот, накапливает изменения локально и публикует их разом через `apply()`. Если два mutable snapshot одновременно меняют одно и то же state и оба пытаются `apply()`, второй `apply()` может завершиться конфликтом (`SnapshotApplyConflictException`), который нужно обработать (обычно — повторить попытку).
+
 ## 4.3. Mutation policies
 
 Для `mutableStateOf` можно выбрать:
@@ -366,6 +501,24 @@ val state = mutableStateOf(
 ```
 
 Custom policy должна соответствовать UI-семантике. Игнорирование значимого поля создаст stale UI, а `neverEqualPolicy` может вызвать лишние invalidations.
+
+**Как policy влияет на recomposition, на конкретном примере:**
+
+```kotlin
+data class Point(val x: Int, val y: Int)
+
+val structural = mutableStateOf(Point(0, 0)) // structuralEqualityPolicy() по умолчанию
+structural.value = Point(0, 0)               // равно по equals() -> invalidation НЕ произойдёт
+
+val referential = mutableStateOf(
+    value = Point(0, 0),
+    policy = referentialEqualityPolicy(),
+)
+referential.value = Point(0, 0)              // другой instance, но referentialEqualityPolicy сравнивает по ===
+                                              // -> invalidation ПРОИЗОЙДЁТ, хотя данные идентичны
+```
+
+`structuralEqualityPolicy()` — правильный выбор по умолчанию для data class/value type. `referentialEqualityPolicy()` оправдан для больших объектов, где сравнение полей дороже, чем лишняя recomposition, либо когда identity объекта и есть значимая семантика.
 
 ## 4.4. Почему mutable объект внутри `State` опасен?
 
@@ -424,6 +577,24 @@ items[index] = items[index].copy(selected = true)
 ```
 
 На domain/ViewModel boundary обычно проще экспортировать immutable `List`, а snapshot collections оставить внутри UI state holder.
+
+**Пример с `mutableStateMapOf`:**
+
+```kotlin
+val expandedIds = mutableStateMapOf<Long, Boolean>()
+
+@Composable
+fun UserRow(user: User) {
+    val expanded = expandedIds[user.id] ?: false
+
+    Row(Modifier.clickable { expandedIds[user.id] = !expanded }) {
+        Text(user.name)
+        if (expanded) Text(user.details)
+    }
+}
+```
+
+Запись в конкретный ключ карты — наблюдаемая операция сама по себе, `copy()` всей модели не требуется. Но если карту не очищать при удалении пользователей, она будет расти неограниченно — за lifecycle такого state нужно следить explicitly.
 
 ## 4.7. Что такое `Snapshot.withMutableSnapshot`?
 
@@ -506,6 +677,32 @@ fun Editor(initialText: String) {
 - `remember(entityId)`, если при смене сущности редактор должен сброситься;
 - отдельная синхронизация через effect, если она осмыслена и не уничтожает пользовательский ввод.
 
+**Правильные реализации под каждый контракт:**
+
+```kotlin
+// 1) Параметр — только initial value, явно названо в имени:
+@Composable
+fun Editor(initialText: String) {
+    var text by remember { mutableStateOf(initialText) } // корректно: имя параметра отражает контракт
+    TextField(value = text, onValueChange = { text = it })
+}
+
+// 2) State полностью контролирует parent (state hoisting):
+@Composable
+fun Editor(text: String, onTextChange: (String) -> Unit) {
+    TextField(value = text, onValueChange = onTextChange)
+}
+
+// 3) Сброс при смене сущности — entityId как key:
+@Composable
+fun Editor(entityId: Long, initialText: String) {
+    var text by remember(entityId) { mutableStateOf(initialText) } // новый entityId -> новый remember
+    TextField(value = text, onValueChange = { text = it })
+}
+```
+
+Главная ошибка оригинала — не сам вызов `remember { mutableStateOf(initialText) }`, а отсутствие явного выбора одного из этих трёх контрактов.
+
 ## 5.3. `rememberSaveable`
 
 Сохраняет небольшое UI state через saved-state registry, переживая configuration recreation и system-driven process recreation при наличии сохранённого Bundle.
@@ -550,6 +747,29 @@ val UserDraftSaver = Saver<UserDraft, Bundle>(
 
 Owner обязан удалять state для identity, которая больше никогда не вернётся, иначе registry будет удерживать ненужные данные.
 
+```kotlin
+@Composable
+fun TabsScreen(tabs: List<TabInfo>, selectedTab: String) {
+    val saveableStateHolder = rememberSaveableStateHolder()
+
+    Column {
+        TabRow(tabs, selectedTab)
+
+        Box(Modifier.weight(1f)) {
+            // каждая вкладка сохраняет свой rememberSaveable state (например, scroll position),
+            // даже когда content временно уходит из Composition при переключении вкладки
+            saveableStateHolder.SaveableStateProvider(key = selectedTab) {
+                TabContent(selectedTab)
+            }
+        }
+    }
+}
+
+fun onTabRemovedPermanently(tabKey: String, holder: SaveableStateHolder) {
+    holder.removeState(tabKey) // обязательная очистка, иначе утечка памяти
+}
+```
+
 ## 5.6. `derivedStateOf`
 
 Создаёт производный snapshot state:
@@ -579,6 +799,23 @@ val fullName = "$firstName $lastName"
 - Обычное вычисление выполняется при каждом достижении строки.
 
 `derivedStateOf` не переносит тяжёлую работу в background. Большую фильтрацию/сортировку лучше выполнять в ViewModel/Flow или заранее подготовленном state.
+
+**Сравнение на одном примере:**
+
+```kotlin
+@Composable
+fun Example(listState: LazyListState, firstName: String, lastName: String) {
+    // A: derivedStateOf — вход меняется почти каждый кадр, результат — редко
+    val showButton by remember {
+        derivedStateOf { listState.firstVisibleItemIndex > 0 }
+    }
+
+    // B: remember(keys) — пересчитывает при каждом изменении key, даже если результат тот же
+    val fullName = remember(firstName, lastName) { "$firstName $lastName" }
+}
+```
+
+В (A) `showButton` пересчитывается при каждом scroll-тике, но инвалидирует читателей только когда boolean реально меняется — recomposition читающего composable редкая. В (B) каждое изменение `firstName`/`lastName` вызывает пересчёт, и результат всё равно меняется — такая защита от пересчёта не нужна.
 
 ## 5.8. `snapshotFlow`
 
@@ -620,6 +857,19 @@ Stability — compile-time контракт, помогающий compiler/runti
 
 `MutableState<T>` — stable, хотя mutable: изменение `value` наблюдаемо.
 
+**Пример: почему это важно для skipping**
+
+```kotlin
+data class UserUi(val id: Long, val name: String) // stable: val-поля, все типы stable, есть equals
+
+@Composable
+fun UserRow(user: UserUi) { // restartable + skippable
+    Text(user.name)
+}
+```
+
+Если родитель передаёт новый `UserUi` с теми же полями (`user.copy()` без изменений или тот же instance), compiler сравнивает по `equals` и пропускает (skip) `UserRow` — тело функции не выполняется повторно.
+
 ## 6.2. Что значит immutable?
 
 Публично наблюдаемое состояние объекта после создания не меняется, а методы не скрывают изменение значимого state.
@@ -645,6 +895,28 @@ data class UserUi(
 - wrapper с честным контрактом;
 - stability configuration для типов, в которых команда уверена;
 - не оптимизировать, если нет измеренной проблемы.
+
+**Демонстрация проблемы:**
+
+```kotlin
+@Composable
+fun Feed(items: List<Item>) { // List<Item> compiler считает unstable
+    Column {
+        items.forEach { ItemRow(it) }
+    }
+}
+```
+
+Без strong skipping compiler не может доказать, что содержимое `items` не изменилось между вызовами, и generated code будет считать `Feed` unstable-параметром — recomposition родителя почти всегда перезапустит `Feed` целиком, даже если список идентичен. Решение — либо полагаться на strong skipping (сравнение по `===` для того же instance), либо использовать `ImmutableList` (kotlinx.collections.immutable) как явный stable-контракт:
+
+```kotlin
+@Composable
+fun Feed(items: ImmutableList<Item>) { // явно stable для compiler
+    Column {
+        items.forEach { ItemRow(it) }
+    }
+}
+```
 
 ## 6.4. Что делает strong skipping?
 
@@ -685,6 +957,17 @@ list += "B"
 
 Сначала измеряют frame time и источник работы, затем смотрят compiler metrics/stability reports.
 
+**Пример, когда skipping не даёт выигрыша:**
+
+```kotlin
+@Composable
+fun Divider(color: Color = DividerColor) { // дешёвая обёртка, вызывается редко
+    Box(Modifier.fillMaxWidth().height(1.dp).background(color))
+}
+```
+
+Проверка dirty flags и сравнение `color` может стоить дороже, чем просто выполнить тело заново — здесь skipping не критичен. Важнее skipping для composable, вызываемого часто (внутри списка) с дорогим телом.
+
 ## 6.7. Лямбды и strong skipping
 
 Compiler memoizes lambdas внутри composable с keys по captured values. Это уменьшает случаи, когда новый callback ломает skipping child.
@@ -707,6 +990,19 @@ Compiler memoizes lambdas внутри composable с keys по captured values. 
 - Macrobenchmark.
 
 Не начинайте с `@Stable` на всех моделях. Сначала найдите пользовательскую проблему и докажите, что её причина — лишняя composition work.
+
+**Как читать compiler report:** после сборки с включёнными Compose compiler metrics/reports генерируются файлы вида `*-classes.txt` и `*-composables.txt`, где для каждой функции указано `restartable`, `skippable`, `stable`/`unstable` для каждого параметра. Например:
+
+```text
+restartable skippable fun UserRow(
+  stable user: UserUi
+)
+restartable fun Feed(
+  unstable items: List<Item>
+)
+```
+
+`Feed` — restartable, но не skippable из-за `unstable items`. Это прямой сигнал, что стоит проверить, действительно ли `Feed` часто recomposes с одинаковым `items`, прежде чем менять тип параметра.
 
 ---
 
@@ -870,6 +1166,23 @@ Key описывает identity операции. Если операция за
 
 Слишком широкий key вызывает лишние отмены. Слишком узкий оставляет effect со stale dependency. `LaunchedEffect(Unit)` означает «на lifetime этого call site», а не «один раз на приложение».
 
+```kotlin
+// Слишком широкий key: отдельный filter не должен перезапускать загрузку профиля
+LaunchedEffect(userId, filter) { // filter не влияет на загрузку профиля, лишняя отмена/перезапуск
+    profileRepository.load(userId)
+}
+
+// Слишком узкий key: при смене userId старый coroutine не отменится
+LaunchedEffect(Unit) { // Unit не зависит от userId -> stale данные при смене пользователя
+    profileRepository.load(userId)
+}
+
+// Правильно: key точно описывает identity операции
+LaunchedEffect(userId) {
+    profileRepository.load(userId)
+}
+```
+
 ## 8.3. `rememberUpdatedState`
 
 Позволяет long-lived effect видеть свежий callback без restart:
@@ -950,6 +1263,26 @@ val image by produceState<Result<Image>?>(null, url) {
 ## 8.8. `rememberUpdatedState` — не замена keys
 
 Используйте его только если operation lifetime не должен меняться. Если смена `userId` означает другую подписку, прятать `userId` в `rememberUpdatedState` неверно: старую операцию нужно отменить и создать новую.
+
+```kotlin
+// Неверно: userId скрыт в rememberUpdatedState, LaunchedEffect не перезапускается при смене пользователя
+val currentUserId by rememberUpdatedState(userId)
+LaunchedEffect(Unit) {
+    subscribeToUpdates(currentUserId) // подписался на первого userId и больше не переподпишется
+}
+
+// Правильно: userId — key, смена вызывает отмену старой подписки и новую подписку
+LaunchedEffect(userId) {
+    subscribeToUpdates(userId)
+}
+
+// rememberUpdatedState уместен, когда операция не должна прерываться, а меняется только callback:
+val currentOnComplete by rememberUpdatedState(onComplete)
+LaunchedEffect(Unit) { // один timer на lifetime composable, callback может меняться
+    delay(5_000)
+    currentOnComplete()
+}
+```
 
 ## 8.9. Effect API — краткая таблица выбора
 
@@ -1259,11 +1592,46 @@ Row(Modifier.height(IntrinsicSize.Min)) {
 
 Intrinsic pass добавляет работу. Для custom layout default intrinsic implementation может быть приблизительной. Subcomposition-based layouts вроде lazy containers обычно не могут заранее знать полный набор children.
 
+**Простое объяснение:** иногда родителю нужно знать размер ребёнка **до** того, как он его реально измерит, чтобы согласовать геометрию нескольких детей друг с другом — например, чтобы разделитель в `Row` был точно равной высоте самого высокого текста, а не растягивался на весь `fillMaxHeight()` экрана. Intrinsic отвечает на вопрос «какой был бы твой размер, если бы тебя измерили с такими и такими constraints?» без реального measure.
+
+**Пример: без intrinsics и с ними**
+
+```kotlin
+// Без IntrinsicSize.Min разделитель с fillMaxHeight() растянется на всю высоту Row,
+// потому что Row по умолчанию даёт детям maxHeight = Constraints.Infinity/экран
+ Row {
+    Text("Left", Modifier.weight(1f))
+    VerticalDivider(Modifier.fillMaxHeight()) // растянется на весь экран
+    Text("Right", Modifier.weight(1f))
+}
+
+// С IntrinsicSize.Min Row сначала спрашивает у каждого ребёнка minIntrinsicHeight,
+// берёт максимум и только потом выставляет это значение как maxHeight для всех детей
+Row(Modifier.height(IntrinsicSize.Min)) {
+    Text("Left", Modifier.weight(1f))
+    VerticalDivider(Modifier.fillMaxHeight()) // теперь равна высоте текста
+    Text("Right", Modifier.weight(1f))
+}
+```
+
 ## 11.6. `BoxWithConstraints`
 
 Предоставляет constraints в composable content и выполняет subcomposition во время layout. Полезен, когда структура UI действительно зависит от доступного места.
 
 Не применяйте его в каждом item только для чтения ширины: subcomposition имеет overhead. Для adaptive screen-level решений чаще подходят window/adaptive APIs.
+
+```kotlin
+@Composable
+fun AdaptiveCard(modifier: Modifier = Modifier) {
+    BoxWithConstraints(modifier) {
+        if (maxWidth < 360.dp) {
+            CompactCardContent()
+        } else {
+            WideCardContent()
+        }
+    }
+}
+```
 
 ## 11.7. `SubcomposeLayout`
 
@@ -1271,17 +1639,75 @@ Intrinsic pass добавляет работу. Для custom layout default int
 
 Это мощный, но дорогой и сложный API. Для обычного custom layout достаточно `Layout`.
 
+```kotlin
+@Composable
+fun MatchParentWidthColumn(
+    label: @Composable () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    SubcomposeLayout { constraints ->
+        // сначала измеряем label, чтобы узнать его ширину
+        val labelPlaceable = subcompose("label", label)
+            .first()
+            .measure(constraints.copy(minWidth = 0))
+
+        // затем компонуем content с constraints, зависящими от результата первого измерения
+        val contentPlaceable = subcompose("content", content)
+            .first()
+            .measure(constraints.copy(minWidth = labelPlaceable.width))
+
+        layout(contentPlaceable.width, labelPlaceable.height + contentPlaceable.height) {
+            labelPlaceable.placeRelative(0, 0)
+            contentPlaceable.placeRelative(0, labelPlaceable.height)
+        }
+    }
+}
+```
+
 ## 11.8. Alignment lines
 
 Child может передать parent логическую линию, например first/last text baseline. Parent использует её для выравнивания элементов с различной внутренней геометрией.
 
 Это надёжнее ручного измерения текста через глобальные координаты.
 
+```kotlin
+@Composable
+fun BaselineAlignedRow() {
+    Row {
+        Text(
+            text = "12",
+            style = MaterialTheme.typography.displayLarge,
+            modifier = Modifier.alignByBaseline(), // выравнивает по last baseline текста, а не по центру/краю box
+        )
+        Text(
+            text = "руб.",
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.alignByBaseline(),
+        )
+    }
+}
+```
+
+Строки с разным размером шрифта выровняются по линии текста, а не по границам блока.
+
 ## 11.9. Lookahead
 
 Lookahead APIs позволяют узнать будущие layout bounds и анимировать переход к ним. Они полезны для shared/structural layout transitions, но требуют понимания обычной и lookahead measurement/placement.
 
 Если достаточно простой draw transform, сложный lookahead layout не нужен.
+
+```kotlin
+LookaheadScope {
+    Box(
+        Modifier.animateBounds(this@LookaheadScope), // плавно анимирует position/size элемента
+        // к целевым lookahead bounds при смене структуры (например, shared element переход)
+    ) {
+        ItemContent()
+    }
+}
+```
+
+Смысл: обычный layout узнаёт новый размер/позицию только после фактического изменения структуры. Lookahead pass выполняется заранее и даёт целевые bounds, чтобы анимация между старым и новым layout была плавной, а не резким скачком.
 
 ---
 
@@ -1488,6 +1914,25 @@ Layer может потребовать offscreen buffer. Избыточные l
 
 Выбор определяется ownership и interrupt semantics, а не краткостью API.
 
+```kotlin
+// одно target value
+val scale by animateFloatAsState(if (pressed) 0.9f else 1f, label = "scale")
+
+// несколько связанных значений, меняющихся вместе постатейной машине
+val transition = updateTransition(targetState = isSelected, label = "selection")
+val color by transition.animateColor(label = "color") { selected ->
+    if (selected) Color.Blue else Color.Gray
+}
+val elevation by transition.animateDp(label = "elevation") { selected ->
+    if (selected) 8.dp else 0.dp
+}
+
+// смена content
+AnimatedContent(targetState = page, label = "page") { targetPage ->
+    PageContent(targetPage)
+}
+```
+
 ## 13.5. `Animatable`
 
 Предоставляет:
@@ -1500,6 +1945,29 @@ Layer может потребовать offscreen buffer. Избыточные l
 
 Запускается из effect или event coroutine, не из composable body.
 
+```kotlin
+val offsetY = remember { Animatable(0f) }
+val scope = rememberCoroutineScope()
+
+Modifier.pointerInput(Unit) {
+    detectDragGestures(
+        onDrag = { change, dragAmount ->
+            change.consume()
+            scope.launch {
+                offsetY.snapTo(offsetY.value + dragAmount.y) // мгновенно следует за пальцем
+            }
+        },
+        onDragEnd = {
+            scope.launch {
+                offsetY.animateTo(0f) // плавно возвращается на место, отменяя предыдущий запуск анимации
+            }
+        },
+    )
+}
+```
+
+Новый вызов `animateTo`/`snapTo` автоматически отменяет текущую анимацию этого `Animatable`, сохраняя текущую скорость — это и есть velocity continuity.
+
 ## 13.6. Layout animation или draw transform?
 
 Draw transform обычно дешевле, потому что не требует remeasure siblings. Но он неверен, если:
@@ -1511,11 +1979,42 @@ Draw transform обычно дешевле, потому что не требу�
 
 Performance не должен ломать semantics.
 
+```kotlin
+// Дешёво: только draw transform, siblings НЕ сдвигаются, hit area остаётся старой
+Box(Modifier.graphicsLayer { scaleX = scale; scaleY = scale })
+
+// Корректно, если soseди должны реагировать на изменение размера: layout-level анимация
+Box(
+    Modifier
+        .animateContentSize() // участвует в measure/layout, соседи сдвигаются корректно
+        .size(if (expanded) 200.dp else 80.dp),
+)
+```
+
 ## 13.7. Reduced motion
 
 Анимация должна учитывать системный animation scale и accessibility expectations. Долгая бесконечная анимация вне видимого экрана тратит CPU/GPU и battery.
 
 `alpha = 0f` не удаляет element: он остаётся в composition, layout, input и semantics. Для настоящего исчезновения используйте conditional composition или `AnimatedVisibility`.
+
+```kotlin
+val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+val alpha by infiniteTransition.animateFloat(
+    initialValue = 0.3f,
+    targetValue = 1f,
+    animationSpec = infiniteRepeatable(tween(1000), RepeatMode.Reverse),
+    label = "alpha",
+)
+
+// Неверно: анимация продолжается, даже когда элемент вне экрана или accessibility требует reduced motion
+Box(Modifier.graphicsLayer { this.alpha = alpha })
+
+// Лучше: учитывать настройки системы и видимость
+val durationScale = LocalDensity.current.let { 1f /* читать из Settings.Global.ANIMATOR_DURATION_SCALE */ }
+if (isVisibleOnScreen) {
+    Box(Modifier.graphicsLayer { this.alpha = alpha })
+} // иначе CPU/GPU работают впустую для невидимого элемента
+```
 
 ---
 
@@ -2153,12 +2652,22 @@ Callback должен описывать намерение:
 
 ## 21.6. Когда custom state holder оправдан?
 
-Plain state holder полезен, когда компонент имеет:
+Custom state holder — это обычный Kotlin-класс (не `ViewModel`), который инкапсулирует несколько связанных `mutableStateOf` полей и операции над ними, и создаётся через `remember { ... }`. Это способ вынести «маленькую бизнес-логику компонента» из тела composable в тестируемый объект, оставаясь при этом внутри UI layer.
 
-- несколько взаимосвязанных state;
-- suspend commands;
-- сложные UI transitions;
-- отдельный unit-testable контракт.
+**Когда действительно оправдан:**
+
+- несколько взаимосвязанных `MutableState`, которые должны изменяться атомарно (например, `query` + `suggestions` + `isSearching` в поиске должны быть согласованы между собой);
+- есть suspend-команды с cancellation (debounce ввода, `Animatable`-переходы), которыми удобно управлять через методы, а не разбросанные `LaunchedEffect`;
+- сложная UI-transition state machine (multi-step wizard, drag-to-dismiss с несколькими фазами);
+- нужен отдельный unit-testable контракт без Compose runtime — тест создаёт `SearchBarState` напрямую и вызывает методы, не поднимая Composition.
+
+**Когда НЕ оправдан (частая ошибка — overengineering):**
+
+- один простой `var expanded by remember { mutableStateOf(false) }` — обёртывание в класс ради класса добавляет косвенность без пользы;
+- state, который и так должен жить в `ViewModel`, потому что переживает recomposition экрана и связан с бизнес-данными — тогда holder дублирует ответственность `ViewModel`;
+- если компонент используется один раз и не переиспользуется — тестируемость через отдельный класс не окупает сложность.
+
+**Практическое правило:** если для описания состояния компонента нужно больше одного `remember { mutableStateOf(...) }`, и эти значения должны меняться согласованно — это сигнал для state holder. Если достаточно одного примитива — holder не нужен.
 
 ```kotlin
 @Stable
@@ -2168,8 +2677,16 @@ class SearchBarState internal constructor(
     var query by mutableStateOf(initialQuery)
         private set
 
+    var suggestions by mutableStateOf<List<String>>(emptyList())
+        private set
+
     fun updateQuery(value: String) {
-        query = value
+        query = value              // атомарное обновление обоих полей в одном методе,
+        suggestions = emptyList()  // а не в разных местах composable body
+    }
+
+    fun applySuggestions(result: List<String>) {
+        suggestions = result
     }
 }
 
@@ -2181,7 +2698,9 @@ fun rememberSearchBarState(
 }
 ```
 
-Нужно продумать keys, Saver и честность `@Stable`.
+`@Stable` здесь честен, потому что все публичные свойства — snapshot state (`mutableStateOf`), и их изменение уведомляет Compose. Если бы `suggestions` был обычным `var` без `mutableStateOf`, `@Stable` был бы ложным обещанием (см. 22.11).
+
+Нужно продумать keys для `remember` (если state должен сбрасываться при смене identity), `Saver` (если нужно пережить configuration change) и честность `@Stable`.
 
 ---
 
@@ -2305,11 +2824,55 @@ Side effect находится в composable body и выполняется пр
 
 ## 22.7. Почему `alpha = 0f` не скрывает control для TalkBack?
 
+```kotlin
+// Неверно: node остаётся в semantics/input, TalkBack всё равно может его озвучить/сфокусировать
+Box(Modifier.graphicsLayer { alpha = if (visible) 1f else 0f }) {
+    Button(onClick = onClick) { Text("Save") }
+}
+```
+
 Alpha меняет drawing, но node остаётся в semantics и input. Для удаления используйте условную Composition/`AnimatedVisibility`, либо отдельно задайте корректную semantics policy, если невидимый node действительно должен оставаться.
+
+```kotlin
+// Правильно: компонент полностью исчезает из composition/semantics/input, когда не виден
+AnimatedVisibility(visible = visible) {
+    Button(onClick = onClick) { Text("Save") }
+}
+
+// Альтернатива, если нужно сохранить место в layout, но убрать из accessibility/input:
+Box(
+    Modifier
+        .graphicsLayer { alpha = if (visible) 1f else 0f }
+        .then(if (visible) Modifier else Modifier.clearAndSetSemantics {})
+        .let { if (visible) it else it } // собственно clickable должен 42быть отключён при !visible
+) {
+    Button(onClick = onClick, enabled = visible) { Text("Save") }
+}
+```
 
 ## 22.8. Почему `graphicsLayer` наложил element на соседа?
 
-Scale/translation не меняют layout bounds. Parent разместил siblings по старой геометрии. Если они должны раздвигаться, анимируйте layout size/placement.
+```kotlin
+// Неверно, если ожидается, что соседи раздвинутся при увеличении карточки
+Row {
+    Box(Modifier.graphicsLayer { scaleX = scale; scaleY = scale }) { Card() } // только visual scale
+    Text("Next item") // layout bounds Card не изменились, поэтому при большом scale карточка налезает на текст
+}
+```
+
+Scale/translation не меняют layout bounds. Parent разместил siblings по старой геометрии. Если они должны раздвигаться, анимируйте layout size/placement:
+
+```kotlin
+// Правильно: animateContentSize участвует в layout, соседи корректно сдвигаются
+Row {
+    Box(
+        Modifier
+            .animateContentSize()
+            .size(if (expanded) 120.dp else 80.dp),
+    ) { Card() }
+    Text("Next item")
+}
+```
 
 ## 22.9. Что не так с этим Flow collection?
 
@@ -2327,7 +2890,39 @@ val state by viewModel.state.collectAsStateWithLifecycle()
 
 ## 22.10. Почему `rememberCoroutineScope` не подходит ViewModel?
 
-Его lifetime связан с call site в Composition. При уходе UI scope отменяется. Business operation, которая должна пережить configuration change, принадлежит `viewModelScope`/repository.
+```kotlin
+// Неверно: бизнес-операция запущена из UI-связанного scope
+@Composable
+fun CheckoutButton(onOrderPlaced: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    Button(onClick = {
+        scope.launch {
+            repository.placeOrder() // отменится, если экран пересоздаётся (rotation) до завершения
+            onOrderPlaced()
+        }
+    }) { Text("Place order") }
+}
+```
+
+Его lifetime связан с call site в Composition. При уходе UI scope отменяется. Business operation, которая должна пережить configuration change, принадлежит `viewModelScope`/repository:
+
+```kotlin
+// Правильно: операция живёт в ViewModel и переживает configuration change
+class CheckoutViewModel(private val repository: OrderRepository) : ViewModel() {
+    fun placeOrder() {
+        viewModelScope.launch {
+            repository.placeOrder()
+        }
+    }
+}
+
+@Composable
+fun CheckoutButton(viewModel: CheckoutViewModel) {
+    Button(onClick = viewModel::placeOrder) { Text("Place order") }
+}
+```
+
+`rememberCoroutineScope` остаётся правильным выбором для UI-mechanics (snackbar, scroll, короткая анимация), но не для бизнес-операций.
 
 ## 22.11. Что не так с ложным `@Immutable`?
 
@@ -2339,6 +2934,19 @@ data class FeedState(
 ```
 
 Аннотация обещает неизменность, которую тип нарушает. Compiler может принять skipping decision и не показать внутреннюю мутацию. Аннотации stability — unsafe contract при неправильном применении.
+
+```kotlin
+// Правильно: поле действительно неизменно, аннотация честна
+data class FeedState(
+    val items: List<Item>, // read-only List, обновление — только через copy(items = newList)
+)
+// @Immutable здесь даже не обязателен: data class с val Listами стабильных типов compiler
+// всё равно считает unstable из-за List (см. 6.3), поэтому при необходимости добавляют явно:
+@Immutable
+data class FeedStateExplicit(
+    val items: ImmutableList<Item>, // kotlinx.collections.immutable — честный контракт для compiler
+)
+```
 
 ## 22.12. Как реализовать scroll analytics?
 

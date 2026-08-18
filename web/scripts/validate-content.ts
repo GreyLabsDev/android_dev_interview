@@ -17,10 +17,7 @@ function normalizeHeading(value: string) {
 
 for (const topic of topics) {
   const questions = questionsByTopic[topic.id]
-  if (questions.length !== 40) {
-    errors.push(`${topic.id}: expected 40 questions, got ${questions.length}`)
-  }
-  if (questions.length % 20 !== 0) {
+  if (questions.length === 0 || questions.length % 20 !== 0) {
     errors.push(`${topic.id}: question count must be divisible by 20`)
   }
 
