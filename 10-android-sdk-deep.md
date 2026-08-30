@@ -1,6 +1,6 @@
 # Android SDK и платформа: теория и ответы для Senior Android
 
-Разбор в том же формате, что `Kotlin_Senior_Android_Guide.markdown`, `07-compose-deep.md`,
+Разбор в том же формате, что `Kotlin_Senior_Android_Guide.markdown`, `Jetpack_Compose_Senior_Android_Guide.markdown`,
 `08-coroutines-android.md` и `09-jvm-memory-deep.md`. Здесь — сам фреймворк: компоненты, жизненные
 циклы, интенты, фон, разрешения, хранилища, окна, версии платформы и Jetpack.
 

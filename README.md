@@ -13,7 +13,7 @@
 | `04-system-design.md` | Фреймворк ответа на 6 шагов, 15 канонических задач, сигналы уровня |
 | `05-behavioral.md` | Поведенческая секция: метод STAR+R, 10 тем для заготовок историй, senior-вопросы, вопросы работодателю |
 | `06-resources.md` | Источники, книги, каналы, тренажёры |
-| `07-compose-deep.md` | Компактный разбор Compose: композитор и slot table, snapshot-система, три фазы, стабильность и strong skipping, состояние, эффекты, списки, layout, тестирование |
+| `Jetpack_Compose_Senior_Android_Guide.markdown` | Полный гайд Compose: runtime/compiler, state, effects, layout, списки, анимации, accessibility, навигация, интероп, тестирование и performance |
 | `08-coroutines-android.md` | Дополнение к Kotlin-гайду: scope'ы в Android-компонентах, тестирование корутин и Flow, мосты в колбэки, паттерны для лайв-кодинга |
 | `09-jvm-memory-deep.md` | Память и рантайм: устройство памяти процесса, GC в ART от Dalvik до генерационного CMC, барьеры, ссылки всех четырёх видов, таксономия утечек, внутренности LeakCanary, native-память, OOM, JIT/AOT/dexopt и профили |
 | `10-android-sdk-deep.md` | Платформа и SDK: компоненты и манифест, Context, Activity и Fragment, интенты и PendingIntent, фоновая работа и её ограничения, Binder, разрешения, хранилища, уведомления, окна и адаптивность, behavior changes с API 33 по 37, Jetpack |
@@ -62,7 +62,7 @@
 | 1–2. Kotlin, корутины и Flow (механика языка) | `Kotlin_Senior_Android_Guide.markdown`; разделы 12–13 — корутины и Flow, раздел 14 — JMM и многопоточность |
 | 2. Корутины: Android, тесты, паттерны | `08-coroutines-android.md` |
 | 2а. Синхронизация, локи, атомики, потокобезопасность | `11-concurrency-deep.md` |
-| 3. Compose | `Jetpack_Compose_Senior_Android_Guide.markdown` как основной (в нём же прикладные разделы 13–14: жесты, фокус, `TextField`, IME), `07-compose-deep.md` — внутренности и сжатый повтор перед интервью |
+| 3. Compose | `Jetpack_Compose_Senior_Android_Guide.markdown` |
 | 8. Платформа, компоненты, фон, разрешения, версии | `10-android-sdk-deep.md` |
 | 8–9. ART, память, утечки, GC, компиляция | `09-jvm-memory-deep.md` |
 | 4, 5. Навигация и архитектура | `12-architecture-deep.md` |

@@ -105,7 +105,7 @@
 
 ## 3. Jetpack Compose
 
-> Разбор — в `Jetpack_Compose_Senior_Android_Guide.markdown` (основной) и `07-compose-deep.md` (сжатый повтор).
+> Разбор — в `Jetpack_Compose_Senior_Android_Guide.markdown`.
 
 39. **[Т]** Какие фазы проходит Compose, чтобы отрисовать кадр, и что можно пропустить?
 40. **[Т]** Что такое рекомпозиция, что её триггерит, и как Compose понимает, какие участки перевыполнять?

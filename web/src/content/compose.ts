@@ -178,7 +178,7 @@ export const composeQuestions: Question[] = [
       mechanism: 'Composition read вызывает recomposition, placement read — replace, draw/layer read — визуальное обновление. Для чистого transform `graphicsLayer` избегает перестройки структуры и remeasure.',
       trap: 'Draw transform не меняет layout bounds, hit geometry соседей и scroll range; если они должны измениться, нужна layout-фаза.',
     },
-    source: { file: '07-compose-deep.md', section: '2.2. Отложенное чтение состояния' },
+    source: { file: 'Jetpack_Compose_Senior_Android_Guide.markdown', section: '9.2. Deferred state read' },
     tags: ['phases', 'deferred-read', 'graphics-layer', 'performance'],
   },
   {
@@ -341,7 +341,7 @@ export const composeQuestions: Question[] = [
       mechanism: 'Эфемерная механика компонента остаётся локально, screen/business state живёт в ViewModel, durable source of truth — в data layer. Stateless API получает value и intent callback.',
       trap: 'Правила «всё в ViewModel» и «всё в remember» одинаково игнорируют lifetime и ответственность.',
     },
-    source: { file: '07-compose-deep.md', section: '4.6. State hoisting и UDF' },
+    source: { file: 'Jetpack_Compose_Senior_Android_Guide.markdown', section: '7. State hoisting, UDF и ViewModel' },
     tags: ['state-hoisting', 'udf', 'viewmodel', 'architecture'],
   },
   {
@@ -433,7 +433,7 @@ export const composeQuestions: Question[] = [
       mechanism: 'При входе или смене key ресурс регистрируется; перед перезапуском и при выходе из Composition вызывается `onDispose`.',
       trap: 'Все dependencies, меняющие регистрацию, должны быть keys либо безопасно читаться через `rememberUpdatedState`.',
     },
-    source: { file: '07-compose-deep.md', section: '5.2. DisposableEffect' },
+    source: { file: 'Jetpack_Compose_Senior_Android_Guide.markdown', section: '8.4. DisposableEffect' },
     tags: ['disposable-effect', 'cleanup', 'lifecycle', 'observer'],
   },
   {
@@ -459,7 +459,7 @@ export const composeQuestions: Question[] = [
       mechanism: 'При смене `userId` `LaunchedEffect` отменяется, но job, запущенный в другом scope, не является его дочерним и может продолжить старую работу.',
       trap: '`rememberCoroutineScope` предназначен прежде всего для запуска из event callbacks, например нажатия кнопки.',
     },
-    source: { file: '07-compose-deep.md', section: '12.5' },
+    source: { file: 'Jetpack_Compose_Senior_Android_Guide.markdown', section: '22.14. Почему rememberCoroutineScope внутри LaunchedEffect ломает lifetime?' },
     tags: ['remember-coroutine-scope', 'launched-effect', 'structured-concurrency', 'code-trap'],
   },
   {
@@ -507,7 +507,7 @@ export const composeQuestions: Question[] = [
       mechanism: 'Каждый element действует относительно следующего в chain; то же относится к `clickable`, `clip`, `size`, `offset`, draw и semantics.',
       trap: 'Если внешний padding должен входить в hit area, `clickable` располагают до него в цепочке.',
     },
-    source: { file: '07-compose-deep.md', section: '7.1. Порядок модификаторов' },
+    source: { file: 'Jetpack_Compose_Senior_Android_Guide.markdown', section: '10.1. Почему порядок modifiers важен?' },
     tags: ['modifier', 'order', 'padding', 'drawing'],
   },
   {
@@ -551,7 +551,7 @@ export const composeQuestions: Question[] = [
       mechanism: '`SubcomposeLayout` нужен, когда структура действительно зависит от измерений; lazy containers тоже используют этот механизм. Для обычного расположения дешевле `Layout` или готовый primitive.',
       trap: 'Screen-level adaptive решение часто лучше строить на window/adaptive API, а не размножать `BoxWithConstraints` по items.',
     },
-    source: { file: '07-compose-deep.md', section: '7.3. SubcomposeLayout и его цена' },
+    source: { file: 'Jetpack_Compose_Senior_Android_Guide.markdown', section: '11.7. SubcomposeLayout' },
     tags: ['subcompose-layout', 'box-with-constraints', 'layout', 'performance'],
   },
   {
@@ -595,7 +595,7 @@ export const composeQuestions: Question[] = [
       mechanism: 'Стабильный ID помогает сохранить remembered/saveable state, корректно обработать reorder, переиспользовать composition и анимировать placement.',
       trap: 'Key — часть correctness: ошибка проявляется как «переехавший» input, expanded state или effect, а не только как потеря производительности.',
     },
-    source: { file: '07-compose-deep.md', section: '6.1. key в LazyColumn' },
+    source: { file: 'Jetpack_Compose_Senior_Android_Guide.markdown', section: '12.2. Зачем key в items?' },
     tags: ['lazy-column', 'key', 'identity', 'state'],
   },
   {
@@ -661,7 +661,7 @@ export const composeQuestions: Question[] = [
       mechanism: 'Route получает platform owners и собирает lifecycle-aware state; Screen отображает данные и сообщает намерения, поэтому легко запускается в Preview и component test.',
       trap: 'Два независимых sources of truth между Route и Screen создают рассинхронизацию.',
     },
-    source: { file: '07-compose-deep.md', section: '9.1. Разделение на stateful и stateless' },
+    source: { file: 'Jetpack_Compose_Senior_Android_Guide.markdown', section: '7.3. Route и Screen' },
     tags: ['route-screen', 'architecture', 'testability', 'viewmodel'],
   },
   {
@@ -705,7 +705,7 @@ export const composeQuestions: Question[] = [
       mechanism: '`staticCompositionLocalOf` подходит практически неизменяемым tree-scoped значениям; обычный local — значениям, где точечное отслеживание обновлений важно.',
       trap: 'CompositionLocal — скрытая dependency; screen data и business services без tree-scoped семантики лучше передавать явно.',
     },
-    source: { file: '07-compose-deep.md', section: '8. CompositionLocal' },
+    source: { file: 'Jetpack_Compose_Senior_Android_Guide.markdown', section: '15. CompositionLocal, theming и design system' },
     tags: ['composition-local', 'invalidation', 'dependency'],
   },
   {
@@ -771,7 +771,7 @@ export const composeQuestions: Question[] = [
       mechanism: '`factory` вызывается для создания экземпляра, `update` может выполняться повторно с новыми входами, а `onRelease` закрывает player/map/WebView-подобные ресурсы.',
       trap: 'Не следует создавать View через `remember` вне `factory`; для reuse в lazy container нужен корректный reset item-specific listeners/state.',
     },
-    source: { file: '07-compose-deep.md', section: '11. Интероп с View' },
+    source: { file: 'Jetpack_Compose_Senior_Android_Guide.markdown', section: '18. View interoperability' },
     tags: ['android-view', 'interop', 'lifecycle', 'resources'],
   },
   {

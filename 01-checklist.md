@@ -76,9 +76,8 @@
 
 ## 3. Jetpack Compose 🔴
 
-> Разбор внутренностей (фазы, рекомпозиция, стабильность, эффекты, производительность, тестирование) —
-> в `07-compose-deep.md`. Прикладные разделы — жесты и `pointerInput`, фокус, `TextField`, insets и IME,
-> анимации, интероп — в `Jetpack_Compose_Senior_Android_Guide.markdown`, разделы 13–14.
+> Полный разбор Compose — в `Jetpack_Compose_Senior_Android_Guide.markdown`: от runtime и recomposition
+> до жестов, `TextField`, insets, анимаций, accessibility, интеропа и тестирования.
 
 - [ ] 🔴 Три фазы: Composition → Layout → Drawing; что можно пропустить и как «отложить» чтение состояния до нужной фазы (лямбда-модификаторы, `graphicsLayer`)
 - [ ] 🔴 Рекомпозиция: что её триггерит, snapshot-система, slot table, как компилятор решает пропустить вызов

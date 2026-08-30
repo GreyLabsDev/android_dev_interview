@@ -11,7 +11,7 @@ export const topics: Topic[] = [
     id: 'compose',
     title: 'Jetpack Compose',
     description: 'Runtime, state, recomposition, layout, effects и производительность.',
-    sources: ['07-compose-deep.md', 'Jetpack_Compose_Senior_Android_Guide.markdown'],
+    sources: ['Jetpack_Compose_Senior_Android_Guide.markdown'],
   },
   {
     id: 'coroutines',

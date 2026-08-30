@@ -857,6 +857,16 @@ Stability — compile-time контракт, помогающий compiler/runti
 
 `MutableState<T>` — stable, хотя mutable: изменение `value` наблюдаемо.
 
+**Типы, которые Compose обычно считает stable по умолчанию:**
+
+- примитивы и их boxed-варианты (`Int`, `Long`, `Boolean` и т.д.);
+- `String`, `Enum` и функциональные типы;
+- `State<T>` / `MutableState<T>` и другие snapshot state containers;
+- типы, явно помеченные `@Stable` или `@Immutable`;
+- data-классы с `val`-свойствами, если тип каждого публичного свойства тоже stable.
+
+Последний пункт не означает, что любой `data class` stable: `data class Screen(val items: List<Item>)` наследует нестабильность `List`.
+
 **Пример: почему это важно для skipping**
 
 ```kotlin
@@ -884,17 +894,61 @@ data class UserUi(
 
 Аннотация — обещание разработчика, а не runtime-проверка. Если внутри `@Immutable` хранится изменяемый список, Compose может skip нужное обновление.
 
+Честная immutable UI-модель использует immutable-поля на всей публичной поверхности:
+
+```kotlin
+@Immutable
+data class UiUser(
+    val id: String,
+    val name: String,
+    val tags: ImmutableList<String>,
+)
+```
+
+`@Stable` подходит и для намеренно mutable holder, но только если каждое наблюдаемое изменение проходит через snapshot state:
+
+```kotlin
+@Stable
+class SearchState(initialQuery: String) {
+    var query by mutableStateOf(initialQuery)
+        private set
+
+    fun updateQuery(value: String) {
+        query = value
+    }
+}
+```
+
+Обычное `var query: String` в таком классе не регистрирует snapshot write. Пометка `@Stable` тогда лжива и способна оставить UI устаревшим.
+
 ## 6.3. Почему `List<T>` часто считается unstable?
 
 Интерфейс `List` read-only, но underlying implementation может быть mutable. Compiler не может доказать глубокую неизменяемость стандартной коллекции.
+
+Типичные нестабильные случаи:
+
+- `List<T>`, `Map<K, V>` и `Set<T>`: за read-only интерфейсом может скрываться mutable implementation;
+- публичное `var`, если изменения не наблюдаются через Compose state;
+- модель из модуля, который не компилируется Compose compiler plugin: compiler не может вывести её контракт автоматически.
 
 Решения по ситуации:
 
 - strong skipping и тот же list instance;
 - immutable/persistent collections;
 - wrapper с честным контрактом;
-- stability configuration для типов, в которых команда уверена;
+- `stabilityConfigurationFile` для внешних типов, в чьём контракте команда уверена;
 - не оптимизировать, если нет измеренной проблемы.
+
+Например, для стабильной внешней модели можно задать configuration file в Compose compiler DSL:
+
+```kotlin
+composeCompiler {
+    stabilityConfigurationFile = rootProject.layout.projectDirectory
+        .file("compose-stability.conf")
+}
+```
+
+В `compose-stability.conf` перечисляют только типы с реально соблюдаемым контрактом, например `com.example.domain.ImmutableUser`. Конфигурация не делает объект immutable и не отслеживает его мутации: ошибочная запись создаёт тот же риск stale UI, что и ложная аннотация.
 
 **Демонстрация проблемы:**
 
@@ -2983,6 +3037,30 @@ Senior-ответ:
 9. повторить benchmark.
 
 Ответ «добавлю remember» недостаточен.
+
+## 22.14. Почему `rememberCoroutineScope` внутри `LaunchedEffect` ломает lifetime?
+
+```kotlin
+val scope = rememberCoroutineScope()
+
+LaunchedEffect(userId) {
+    scope.launch { repository.load(userId) } // неверно
+}
+```
+
+`LaunchedEffect` уже выполняет suspend-код в coroutine, привязанной к его key. Вложенный `scope.launch`
+не становится её child: он принадлежит scope call site и переживёт смену `userId`, хотя effect для старого
+пользователя уже отменён. Это создаёт stale work и может записать на экран устаревший результат.
+
+```kotlin
+LaunchedEffect(userId) {
+    repository.load(userId) // отменяется и перезапускается вместе с effect
+}
+```
+
+`rememberCoroutineScope` нужен для coroutine, начатой из event callback (`onClick`, drag, snackbar), когда
+нельзя вызвать suspend-функцию непосредственно. Не используйте его как универсальный способ запустить
+работу из composable.
 
 ---
 

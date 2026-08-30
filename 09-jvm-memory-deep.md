@@ -1,6 +1,6 @@
 # Память, GC и ART: подкапотная теория для Senior Android
 
-Разбор в том же формате, что `Kotlin_Senior_Android_Guide.markdown` и `07-compose-deep.md`.
+Разбор в том же формате, что `Kotlin_Senior_Android_Guide.markdown` и `Jetpack_Compose_Senior_Android_Guide.markdown`.
 Дополняет их, а не повторяет: в Kotlin-гайде раздел 14 закрывает модель памяти JVM с точки зрения
 многопоточности (happens-before, visibility, race conditions), раздел 16 — аллокационную гигиену.
 Здесь — как устроен рантайм и сборка мусора, что такое ссылки разной силы, откуда берутся утечки
@@ -395,7 +395,7 @@ override fun onDestroyView() { super.onDestroyView(); _binding = null }  // ✅ 
   просто останется в slot table.
 - **Подписка, поднятая в неправильном месте.** `LaunchedEffect(Unit) { collect() }` привязан
   к композиции, а `rememberCoroutineScope().launch` — к call site, и второй переживает первый
-  (разбор — в `07-compose-deep.md`, раздел 12).
+  (разбор — в Compose-гайде, раздел 22.14).
 - **`collectAsState()` вместо `collectAsStateWithLifecycle()`.** Формально не утечка объекта, но
   upstream остаётся активным на скрытом экране, то есть удерживает ресурсы и жжёт батарею —
   и в отчётах это выглядит как «растёт память в фоне».

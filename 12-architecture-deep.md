@@ -8,9 +8,9 @@
 - механика ViewModel, `ViewModelStore` и разница «пересоздание против смерти процесса» —
   `10-android-sdk-deep.md`, раздел 3.2;
 - одноразовые события в Compose и таблица «`Channel` против `SharedFlow`» —
-  `07-compose-deep.md`, раздел 9.3;
+  `Jetpack_Compose_Senior_Android_Guide.markdown`, раздел 7.8;
 - state hoisting, `remember`/`rememberSaveable` и стабильность UI-моделей —
-  `Jetpack_Compose_Senior_Android_Guide.markdown` и `07-compose-deep.md`;
+  `Jetpack_Compose_Senior_Android_Guide.markdown`;
 - проектирование системы целиком (требования, масштаб, отказы) — `04-system-design.md`;
 - слой данных, offline-first, Room и синхронизация — `14-data-network-deep.md`.
 
@@ -169,7 +169,7 @@ sealed interface UiMessage {
 
 **Состояние должно быть стабильным для Compose.** `List<T>` формально нестабилен, поэтому либо
 `ImmutableList` из `kotlinx.collections.immutable`, либо `@Immutable` на модели. Детали —
-в `07-compose-deep.md`, раздел про стабильность. И никогда `MutableList` внутри state: разбор
+в `Jetpack_Compose_Senior_Android_Guide.markdown`, раздел 6. И никогда `MutableList` внутри state: разбор
 этой конкретной ошибки — в Compose-гайде.
 
 **Состояние — это не «данные из репозитория как есть».** Если во ViewModel лежит
@@ -203,7 +203,7 @@ fun onMessageShown() {
 
 Практика при этом расходится: `Channel` для навигации и снекбаров остаётся распространённым
 решением, потому что он проще и в большинстве случаев работает (таблица компромиссов —
-в `07-compose-deep.md`, раздел 9.3). Сильный ответ на интервью выглядит так: назвать
+в `Jetpack_Compose_Senior_Android_Guide.markdown`, раздел 7.8). Сильный ответ на интервью выглядит так: назвать
 официальную рекомендацию, объяснить её причину, назвать, что используете вы, и честно сказать,
 какой у вашего варианта недостаток. Ответ «мы используем Channel», без осознания того, что
 это противоречит рекомендации и почему, — слабее.
