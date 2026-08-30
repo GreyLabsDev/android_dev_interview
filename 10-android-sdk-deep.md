@@ -87,6 +87,47 @@ class App : Application() {
 В Compose внутри composable доступен `LocalContext.current` — как правило это activity context,
 и его действует то же правило: не сохранять в долгоживущих объектах.
 
+## 2.2. Какие операции требуют какой `Context`
+
+Большинство методов (`getString`, `getSystemService`, `openFileInput`, `getSharedPreferences`,
+`ContentResolver`, `startService`) объявлены уже у базового `Context`. Вопрос не в том, можно ли
+вызвать метод, а достаточно ли у конкретного экземпляра lifetime, theme, configuration и window token
+для желаемого результата.
+
+| Операция | Подходящий Context | Важное ограничение |
+| --- | --- | --- |
+| БД, DataStore, SharedPreferences, файлы, `ContentResolver`, WorkManager, singleton SDK | `applicationContext` | Хранить только application context в long-lived object; Activity здесь не нужна и создаст утечку. |
+| Ресурсы без UI (`getString`, raw resource), `PackageManager`, большинство system services | обычно `applicationContext` | Ресурсы application context не отражают configuration конкретного окна: например, локальный override locale, night mode или display size Activity. |
+| Инфляция layout, themed attribute (`?attr/colorPrimary`), `ContextThemeWrapper` | `Activity` или тематизированный `ContextThemeWrapper` | Метод `LayoutInflater.from(context)` доступен с любым Context, но application context часто даст базовую/не ту тему. |
+| Обычный `Dialog`, `PopupWindow`, привязанный к экрану UI | `Activity` | Нужны theme и window token текущего окна. Application context не подходит для обычного dialog. |
+| Runtime permission, `ActivityResultLauncher`, системный picker с result callback | `Activity` / `Fragment` | `requestPermissions` и регистрация Activity Result требуют lifecycle/UI owner, а не просто Context. |
+| Открыть экран через `startActivity` | `Activity`; из другого Context тоже возможно | У `applicationContext`/`Service` обязателен `FLAG_ACTIVITY_NEW_TASK`; background activity launch ограничен платформой. |
+| `startService`, `bindService`, `startForegroundService` | любой `Context` | Для долгой работы в фоне действуют background execution limits; foreground service должен быстро вызвать `startForeground`, а durable work обычно принадлежит WorkManager. |
+| Показать `Toast`, создать notification/`NotificationManager` | `applicationContext` | Не держит экран и безопасен для долгоживущего кода; notification tap открывает UI через `PendingIntent`, а не прямой reference на Activity. |
+| Зарегистрировать receiver на время экрана | `Activity`/`Fragment` context и симметричный unregister | Регистрацию снимают с тем же lifetime; receiver, созданный в `onReceive`, не должен хранить его `context` или делать долгую работу после возврата. |
+| Окно поверх других приложений | application/window context + `TYPE_APPLICATION_OVERLAY` | Требуется `SYSTEM_ALERT_WINDOW`; это не замена dialog и имеет отдельные policy/UX ограничения. |
+
+Практическое правило: передавайте вниз самый узкий Context, который действительно нужен. Repository обычно
+получает `applicationContext`; UI-компонент получает `Activity` не как поле, а только на время операции.
+Если API нужен лишь для строки или system service, принимайте конкретную dependency (`Resources`,
+`NotificationManager`, `ContentResolver`), а не весь `Context` — это уменьшает связность и риск утечки.
+
+```kotlin
+class ImageCache(context: Context) {
+    private val appContext = context.applicationContext // cache живёт дольше Activity
+}
+
+fun openDetails(context: Context, id: String) {
+    val intent = Intent(context, DetailActivity::class.java).putExtra("id", id)
+    if (context !is Activity) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    context.startActivity(intent)
+}
+```
+
+`context.applicationContext` может быть `null` у редких custom/wrapper contexts; в application-scoped
+зависимости лучше инъецировать именно `Application` или заранее проверенный app context, а не silently
+переключаться на Activity context.
+
 ---
 
 # 3. Activity
