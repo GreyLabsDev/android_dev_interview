@@ -30,6 +30,10 @@ suspend fun loadProfile(api: Api): Profile {
 | `CoroutineName` | диагностику и логи |
 | `CoroutineExceptionHandler` | последнюю обработку необработанной ошибки root `launch` |
 
+Дочерняя coroutine наследует context родителя, но создаёт **свой** `Job`, связанный с родительским.
+Если в `launch` передать другой dispatcher или `CoroutineName`, заменится только элемент с тем же ключом;
+передача нового `Job` разрывает обычную parent-child связь и требует осознанного управления lifetime.
+
 `withContext(Dispatchers.IO)` переключает контекст **внутри уже существующей** корутины и ждёт результат;
 он не создаёт независимую фоновую задачу. Dispatcher выбирают по природе работы: `Default` для CPU-bound
 вычислений, `IO` для блокирующего I/O. Suspend-сетевой API обычно не требует вручную оборачивать каждый
@@ -59,9 +63,17 @@ suspend fun loadScreen(api: Api): Screen = coroutineScope {
 siblings. Но ошибка всё равно должна быть наблюдена через `await` или обработана внутри `launch`.
 
 ```kotlin
+suspend fun <T> asWidgetResult(block: suspend () -> T): Result<T> = try {
+    Result.success(block())
+} catch (error: CancellationException) {
+    throw error
+} catch (error: Throwable) {
+    Result.failure(error)
+}
+
 suspend fun refreshWidgets(api: Api): List<WidgetResult> = supervisorScope {
-    val weather = async { runCatching { api.weather() } }
-    val news = async { runCatching { api.news() } }
+    val weather = async { asWidgetResult { api.weather() } }
+    val news = async { asWidgetResult { api.news() } }
 
     listOf(WidgetResult(weather.await()), WidgetResult(news.await()))
 }
@@ -128,6 +140,35 @@ root `launch`, не ловит исключения `async` до `await`, и н�
 Обрабатывайте expected domain/network ошибки на границе use case или UI state; unexpected ошибки логируйте
 и дайте им завершить операцию.
 
+### Cleanup при отмене и наблюдение завершения
+
+При отмене coroutine сначала находится в состоянии cancelling: `finally` ещё выполнится и подходит для
+синхронного освобождения ресурса. Suspend-вызов в `finally` немедленно увидит отмену, поэтому обязательный
+короткий suspend-cleanup оборачивают в `NonCancellable`. Это не способ продолжить бизнес-операцию после
+отмены: в блоке должны быть только cleanup с собственным коротким timeout или закрытие ресурса.
+
+```kotlin
+suspend fun upload(file: File, api: UploadApi) {
+    val uploadId = api.start(file)
+    try {
+        api.send(uploadId, file)
+    } finally {
+        withContext(NonCancellable) {
+            withTimeoutOrNull(1_000) { api.release(uploadId) }
+        }
+    }
+}
+```
+
+`invokeOnCompletion` полезен для не-suspending наблюдения метрик или логирования terminal state. Он не
+заменяет `try/finally`: callback вызывается после завершения и не может приостанавливаться.
+
+```kotlin
+val job = scope.launch { sync() }
+job.invokeOnCompletion { cause ->
+    metrics.record("sync_finished", cause == null)
+}
+
 ## 0.5. Параллелизм, ограничение и backpressure
 
 Конкурентность не равна параллелизму. Тысяча coroutines может ожидать сеть на нескольких потоках;
@@ -156,6 +197,20 @@ suspend fun <T, R> Iterable<T>.mapConcurrent(
 ограничить и число уже созданных задач. Лимит выбирают по измерениям и контрактам зависимостей, а не по
 числу ядер: для HTTP он часто ниже server rate limit, для CPU обычно близок к доступному parallelism.
 
+`limitedParallelism(1)` также может сериализовать задачи, переданные **в одну и ту же** dispatcher-view.
+Это удобно для очереди операций с единственным владельцем состояния, но не заменяет `Mutex`: доступ к
+этому состоянию из другого dispatcher всё равно создаст гонку.
+
+```kotlin
+class WriteQueue {
+    private val dispatcher = Dispatchers.IO.limitedParallelism(1)
+
+    suspend fun save(draft: Draft) = withContext(dispatcher) {
+        database.write(draft) // все вызовы save выполняются строго по одному
+    }
+}
+```
+
 ## 0.6. Рецепты владения scope
 
 Правило по умолчанию: use case и repository предоставляют `suspend fun`; scope выбирает слой, который
@@ -175,8 +230,13 @@ class DashboardViewModel(
 ) : ViewModel() {
     fun refresh() = viewModelScope.launch {
         _state.value = DashboardState.Loading
-        _state.value = runCatching { loadDashboard() }
-            .fold(::DashboardState.Content, ::DashboardState.Error)
+        try {
+            _state.value = DashboardState.Content(loadDashboard())
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            _state.value = DashboardState.Error(error)
+        }
     }
 }
 ```
@@ -206,6 +266,16 @@ class BookmarkRepository(
 следует переживать уничтожение View; `rememberCoroutineScope()` — для событий Compose. Эти scopes не
 взаимозаменяемы с `viewModelScope`: например, запрос состояния экрана не должен отменяться на каждом
 пересоздании View.
+
+Для маленького UI-update, уже вызванного на main thread, `Dispatchers.Main.immediate` позволяет не ставить
+coroutine повторно в main queue. Это точечная оптимизация порядка выполнения, а не dispatcher для долгой
+работы; не добавляйте его без требования к re-entrancy и порядку событий.
+
+```kotlin
+suspend fun publish(state: UiState) = withContext(Dispatchers.Main.immediate) {
+    render(state)
+}
+```
 
 ## 0.7. Таймауты и параллельная загрузка
 
@@ -295,7 +365,8 @@ suspend fun loadFromFastestReplica(api: ReplicaApi): Payload = coroutineScope {
 }
 ```
 
-`select` возвращает первый завершившийся `Deferred`, включая ошибку. Если нужен «первый успешный», а ошибка
+`select` возвращает первый завершившийся `Deferred`, включая ошибку. В этом fail-fast варианте ошибка одной
+реплики отменяет вторую, потому что они дети `coroutineScope`. Если нужен «первый успешный», а ошибка
 одной реплики не должна завершать поиск, потребуется `supervisorScope` и явная политика retry/fallback;
 не маскируйте ошибку простым `runCatching`, иначе легко получить бесконечное ожидание.
 
@@ -323,6 +394,139 @@ fun `drops only a widget that exceeds its timeout`() = runTest {
 Такой тест поймает ошибку, при которой общий `coroutineScope` случайно отменяет успешные виджеты вместе
 с опоздавшим. В production timeout подбирают по SLO и наблюдаемой latency, а не по произвольному числу;
 timeout не исправляет зависшую неблокирующую операцию, если её API игнорирует отмену.
+
+## 0.8. Flow: преобразование, объединение и скорость потребителя
+
+`Flow<T>` по умолчанию холодный: код builder запускается заново для каждого `collect`. `StateFlow` и
+`SharedFlow` горячие: существуют независимо от конкретного collector. Операторы ленивы; работа начинается
+в terminal operator (`collect`, `first`, `single`, `launchIn`) или при шаринге через `stateIn`/`shareIn`.
+
+### Преобразование и обработка ошибок
+
+`map` меняет каждую эмиссию один к одному, `filter` пропускает нужные значения, `transform` способен
+выпустить ноль, одно или несколько значений на вход. `catch` ловит только исключения из upstream: он не
+ловит ошибку collector и не должен преобразовывать отмену в UI error.
+
+```kotlin
+fun ProductRepository.observeCards(): Flow<CardsState> = products()
+    .map { products -> products.filter(Product::isAvailable) }
+    .transform { products ->
+        emit(CardsState.Content(products))
+        if (products.isEmpty()) emit(CardsState.Empty)
+    }
+    .retryWhen { error, attempt ->
+        error is IOException && attempt < 2
+    }
+    .catch { error ->
+        if (error is CancellationException) throw error
+        emit(CardsState.Error(error))
+    }
+    .flowOn(Dispatchers.IO)
+```
+
+`retryWhen` ставят до `catch`, чтобы он видел исходную ошибку, а `catch` превращал только исчерпанную
+ошибку в состояние. `flowOn(Dispatchers.IO)` переносит **upstream выше себя** и ставит channel-границу;
+downstream, включая UI collector, остаётся в его context. Поэтому `flowOn` ставят у источника, а не
+оборачивают `collect` в `withContext(IO)`.
+
+### Как выбрать `flatMap*`
+
+| Оператор | Семантика | Типичный сценарий |
+| --- | --- | --- |
+| `flatMapConcat` | ждёт inner Flow по очереди | команды, где порядок обязателен |
+| `flatMapMerge(concurrency)` | собирает несколько inner Flow одновременно | ограниченная параллельная загрузка списка |
+| `flatMapLatest` | отменяет предыдущий inner Flow при новом значении | поиск, фильтры, выбранный id |
+
+```kotlin
+val details: Flow<ItemDetails> = selectedIds
+    .flatMapLatest { id -> repository.observeDetails(id) }
+
+val previews: Flow<Preview> = ids
+    .flatMapMerge(concurrency = 4) { id -> repository.loadPreview(id) }
+```
+
+`flatMapLatest` корректен, только если upstream-операция реагирует на отмену. Иначе старый HTTP-вызов или
+блокирующая работа продолжится в фоне, хотя её результат Flow уже отбросит.
+
+### Все операторы объединения Flow
+
+Для нескольких потоков **значений** есть четыре основных оператора. Ошибка любого upstream отменяет
+результирующий Flow и приходит в нижележащий `catch`; отмена collector отменяет все upstream.
+
+| Оператор | Когда эмитит | Что происходит при завершении источника | Для чего |
+| --- | --- | --- | --- |
+| `merge(a, b)` | каждое значение любого источника, без преобразования | ждёт завершения всех | независимые однотипные события |
+| `zip(a, b)` | когда есть следующая пара значений | завершается, когда завершён первый из источников | попарно связанные последовательности |
+| `combine(a, b)` | после первого значения каждого, затем при любом обновлении | продолжает с последним значением завершённого источника, пока другой работает | UI state, форма, фильтры |
+| `combineTransform(a, b)` | как `combine`, но transform может emit-ить 0..N значений | как `combine` | `Loading` + `Content`, условные или множественные эмиссии |
+
+```kotlin
+// merge: порядок определяется фактической готовностью; источник не маркируется.
+val events: Flow<AnalyticsEvent> = merge(screenEvents, pushEvents)
+
+// zip: [1, 2, 3] и ["A", "B"] -> ["1: A", "2: B"]. Третья цифра не выйдет.
+val labels: Flow<String> = ids.zip(names) { id, name -> "$id: $name" }
+
+// combine: новое значение email пересчитывает форму с последними password и accepted.
+val canSubmit: Flow<Boolean> = combine(email, password, isTermsAccepted) {
+        email, password, accepted ->
+    email.isValid() && password.length >= 8 && accepted
+}
+
+val profileState: Flow<ProfileState> = combineTransform(userId, networkAvailable) { id, online ->
+    if (!online) emit(ProfileState.Offline)
+    else emitAll(repository.observeProfile(id).map(ProfileState::Content))
+}
+```
+
+`merge` не создаёт пары и не хранит последние значения: быстрый источник может эмитить сколько угодно
+раз подряд. `zip` создаёт backpressure между парами: если один Flow быстрее, он ожидает соответствующую
+эмиссию второго. У `combine` частота результата может быть высокой, поэтому после него часто уместны
+`debounce` или `distinctUntilChanged`.
+
+Если внешний Flow выдаёт **внутренние Flow**, используются flattening-операторы или их `flatMap`-варианты:
+
+| Оператор | Эквивалент | Семантика |
+| --- | --- | --- |
+| `flattenConcat()` | `flatMapConcat { it }` | собирает inner Flow строго по одному и сохраняет порядок |
+| `flattenMerge(concurrency)` | `flatMapMerge(concurrency) { it }` | собирает до `concurrency` inner Flow одновременно; порядок эмиссий не гарантирован |
+| `flatMapConcat { value -> flow }` | map + `flattenConcat` | создаёт inner Flow для каждого значения последовательно |
+| `flatMapMerge(concurrency) { value -> flow }` | map + `flattenMerge` | ограниченно конкурентная обработка списка/событий |
+| `flatMapLatest { value -> flow }` | нет отдельного `flattenLatest` API | отменяет предыдущий inner Flow при новом outer-значении |
+
+```kotlin
+val details: Flow<ItemDetails> = selectedIds
+    .flatMapLatest { id -> repository.observeDetails(id) }
+
+val previews: Flow<Preview> = ids
+    .flatMapMerge(concurrency = 4) { id -> repository.loadPreview(id) }
+
+val orderedBatches: Flow<Item> = batchFlows.flattenConcat()
+```
+
+`flatMapLatest` корректен, только если inner-операция реагирует на отмену. Иначе старый HTTP-вызов или
+блокирующая работа продолжится в фоне, хотя его результат Flow уже отбросит. `flatMapMerge` подходит,
+когда важна пропускная способность; для команд с побочным эффектом чаще нужен `flatMapConcat`.
+
+### Backpressure: `buffer`, `conflate`, `collectLatest`
+
+Медленный consumer задаёт скорость цепочки по умолчанию. Меняйте её осознанно:
+
+- `buffer(n)` позволяет producer опередить consumer на `n` элементов, но потребляет память;
+- `conflate()` оставляет последнее значение, пропуская промежуточные: подходит для состояния/координат,
+  но не для платежей и событий, которые нельзя потерять;
+- `collectLatest` отменяет обработку предыдущего значения при новом: подходит для дорогого рендера или
+  поиска, но не для записи в БД.
+
+```kotlin
+locationUpdates
+    .conflate()
+    .collectLatest { location -> mapRenderer.render(location) }
+```
+
+`collectLatest` отменяет **тело collector**, а `flatMapLatest` отменяет **предыдущий inner Flow**. На
+интервью это важное различие: первый выбирают, когда меняется обработка значений, второй — когда меняется
+сам источник данных.
 
 ---
 
