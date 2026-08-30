@@ -481,6 +481,136 @@ broadcast: у receiver такого caller нет. Если нужен пред�
 нестатическим внутренним классом, а отложенное сообщение удерживает `Handler` — классическая утечка
 Activity через `postDelayed` (механика — в `09-jvm-memory-deep.md`, раздел 4). Отменять — `removeCallbacks`.
 
+### `Looper` и `MessageQueue`: кто их создаёт
+
+У каждого thread может быть не более одного `Looper`. Main thread получает `Looper` и `MessageQueue`
+от framework ещё до `Application.onCreate()`: вручную `prepare()`/`loop()` там вызывать не надо. Обычный
+background thread Looper не имеет. Для собственного loop его создают в потоке до использования `Handler`:
+
+```kotlin
+Thread {
+    Looper.prepare()
+    val handler = Handler(Looper.myLooper()!!) { message ->
+        process(message.obj as SyncCommand)
+        true // сообщение обработано; Handler.handleMessage не вызывается
+    }
+    Looper.loop() // блокирует thread и забирает сообщения до quit()
+}.start()
+```
+
+В production почти всегда лучше `HandlerThread`: он сам вызывает `prepare()`/`loop()` и предоставляет
+готовый `looper`. `MessageQueue` сортирует `Message` по времени выполнения; `post` добавляет работу
+как можно раньше, `postDelayed`/`postAtTime` задают не точный дедлайн, а момент «не раньше»: занятый
+thread выполнит задачу позднее. Все сообщения одной очереди выполняются **последовательно**, поэтому
+одна долгая задача задерживает следующие.
+
+### Как выйти на main thread
+
+`Handler(Looper.getMainLooper())` направляет задачу в очередь UI thread независимо от thread текущего
+вызова. Это уместно на границе legacy callback/executor API, когда надо коротко изменить View или
+опубликовать результат.
+
+```kotlin
+private val mainHandler = Handler(Looper.getMainLooper())
+
+fun onImageDecoded(bitmap: Bitmap) {
+    mainHandler.post {
+        imageView.setImageBitmap(bitmap) // выполняется на main thread
+    }
+}
+```
+
+Не создавайте `Handler()` без явного `Looper`: такой конструктор устарел, неясно привязывает handler
+к looper текущего thread и падает, если looper отсутствует. `Handler` не делает работу фоновой: handler,
+созданный с `getMainLooper()`, исполняет её на UI thread. Для coroutine-кода предпочтительны
+`Dispatchers.Main`/`withContext(Dispatchers.Main)`: они дают cancellation и structured concurrency;
+`Handler` остаётся мостом для framework и legacy API.
+
+### Фоновая serial-очередь через `HandlerThread`
+
+```kotlin
+class MetadataWriter : Closeable {
+    private val thread = HandlerThread("metadata-writer").apply { start() }
+    private val handler = Handler(thread.looper)
+
+    fun write(metadata: Metadata) {
+        handler.post { database.write(metadata) } // один за другим, не на main
+    }
+
+    override fun close() {
+        handler.removeCallbacksAndMessages(null)
+        thread.quitSafely() // завершит уже due-сообщения, не выполнит будущие delayed
+    }
+}
+```
+
+`HandlerThread` подходит для небольшого legacy serial I/O без suspend API. Он не заменяет `Dispatchers.IO`:
+у него один thread, нет structured cancellation, а ownership `quitSafely()` лежит на разработчике. Для
+параллельного/отменяемого I/O используйте coroutine dispatcher или executor; не создавайте `HandlerThread`
+на каждый запрос.
+
+### `Runnable`, `Message` и отмена
+
+`post { }` удобен для одной задачи. Если нужно передать code/данные, использовать `what` или отменять
+группу операций, отправляйте `Message`; берите его через `obtainMessage`, чтобы переиспользовать object
+из pool. Сохраняйте тот же `Runnable`/token, иначе снять конкретную задачу невозможно.
+
+```kotlin
+private const val MSG_REFRESH = 1
+private val handler = Handler(Looper.getMainLooper()) { message ->
+    when (message.what) {
+        MSG_REFRESH -> render(message.obj as UiState)
+        else -> false
+    }
+    true
+}
+
+fun scheduleRefresh(state: UiState) {
+    handler.removeMessages(MSG_REFRESH) // debounce предыдущего refresh
+    handler.sendMessageDelayed(handler.obtainMessage(MSG_REFRESH, state), 300)
+}
+
+override fun onDestroy() {
+    handler.removeCallbacksAndMessages(null) // не удерживать Activity после destroy
+    super.onDestroy()
+}
+```
+
+`removeCallbacks(runnable)` снимает только переданный instance, `removeMessages(what)` — сообщения по
+коду, `removeCallbacksAndMessages(token)` — группу `Runnable`, поставленных через `postAtTime` с тем же
+token, а `null` очищает всю очередь этого Handler. Очистка нужна только для работ, чей результат больше
+не должен попасть в уничтоженный owner; нельзя очищать очередь общего application handler, если в ней
+есть задачи других владельцев.
+
+### Роль `Choreographer`
+
+`Handler.post` добавляет обычное сообщение и не синхронизирует его с кадром. `Choreographer` принимает
+frame callbacks около vsync и упорядочивает работу кадра: input, animation, traversal/layout/draw.
+Application обычно не вызывает его для UI-анимаций: `ViewPropertyAnimator`, `ValueAnimator`, Compose
+animation и RecyclerView уже делают это сами. `Choreographer.postFrameCallback` оправдан для редкой
+низкоуровневой логики, которой нужен timestamp следующего кадра, а не как замена `postDelayed`.
+
+```kotlin
+val callback = Choreographer.FrameCallback { frameTimeNanos ->
+    renderer.drawNextFrame(frameTimeNanos)
+    Choreographer.getInstance().postFrameCallback(this) // только пока renderer видим
+}
+
+override fun onStart() {
+    super.onStart()
+    Choreographer.getInstance().postFrameCallback(callback)
+}
+
+override fun onStop() {
+    Choreographer.getInstance().removeFrameCallback(callback)
+    super.onStop()
+}
+```
+
+Frame callback исполняется на thread его `Choreographer`, обычно main; тяжёлая работа в нём съедает
+следующий frame budget. Повторный callback обязательно снимают при уходе UI, иначе он бесконечно держит
+объект и запрашивает кадры.
+
 Свежая деталь: приложения, таргетящие Android 17, получают lock-free реализацию `MessageQueue` —
 быстрее и меньше пропущенных кадров, но ломается код, который рефлексией лазит в её приватные поля
 (встречается в старых библиотеках профилирования и хаках вокруг главного потока).
