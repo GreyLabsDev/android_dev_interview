@@ -2098,11 +2098,54 @@ Modifier.pointerInput(itemId) {
 
 Keys управляют перезапуском handler coroutine. Для свежего callback без restart может потребоваться `rememberUpdatedState`.
 
+Выбирайте API по пользовательскому намерению:
+
+- `Button`, `IconButton`, `Modifier.clickable` — обычная action;
+- `combinedClickable` — tap вместе с long-click/double-click;
+- `toggleable`, `triStateToggleable`, `selectable` — выбор или изменение состояния с правильной role/state semantics;
+- `draggable`, `anchoredDraggable`, `scrollable` — одноосевое движение с готовой coordination;
+- `transformable` — одновременные pan, zoom и rotation;
+- `pointerInput` — жест, которого нет среди высокоуровневых modifiers.
+
+`onClick` не следует эмулировать через `pointerInput`: готовый modifier уже поддерживает keyboard, focus, indication, `InteractionSource`, TalkBack и корректную semantics role.
+
+```kotlin
+Modifier.combinedClickable(
+    onClick = onOpen,
+    onLongClick = onShowContextMenu,
+)
+```
+
 ## 14.2. Gesture competition
 
 Несколько handlers могут претендовать на события. Важно понимать consumption, nested scroll и приоритет высокого/низкого уровня.
 
 Не комбинируйте несколько top-level detector calls последовательно в одном `pointerInput` block, если первый никогда не завершается. Используйте отдельные modifiers или низкоуровневый event loop.
+
+Низкоуровневый API нужен, когда detector нельзя выразить готовым API. `awaitEachGesture` даёт lifecycle одного жеста; `awaitFirstDown` ждёт начало, а `awaitPointerEvent` читает последующие события. Событие проходит через `Initial`, `Main` и `Final` passes. Вызов `change.consume()` сообщает другим handlers, что эта часть изменения обработана, но не прекращает физическую доставку event.
+
+```kotlin
+Modifier.pointerInput(Unit) {
+    awaitEachGesture {
+        val down = awaitFirstDown()
+        var totalDrag = Offset.Zero
+
+        do {
+            val event = awaitPointerEvent()
+            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+            val delta = change.positionChange()
+            if (delta != Offset.Zero) {
+                totalDrag += delta
+                change.consume()
+            }
+        } while (change.pressed)
+
+        onCustomGesture(totalDrag)
+    }
+}
+```
+
+Для вложенного scrolling не перехватывайте вручную все pointer events. `nestedScroll` и `NestedScrollConnection` позволяют parent и child согласованно делить pre/post scroll и fling; `LazyColumn` уже участвует в этом протоколе. Custom gesture должен потреблять только ту дельту, за которую он действительно отвечает.
 
 ## 14.3. Focus
 
@@ -2177,6 +2220,28 @@ Edge-to-edge screen должен определить, кто consume-ит ка�
 - `staticCompositionLocalOf` не отслеживает чтения; изменение provider invalidates весь subtree.
 
 Static вариант подходит для практически неизменяемого значения, например набора design tokens.
+
+```kotlin
+val LocalContentSpacing = staticCompositionLocalOf { 16.dp }
+
+@Composable
+fun AppContent(compact: Boolean, content: @Composable () -> Unit) {
+    CompositionLocalProvider(
+        LocalContentSpacing provides if (compact) 12.dp else 24.dp,
+    ) {
+        content()
+    }
+}
+
+@Composable
+fun CardBody() {
+    Column(Modifier.padding(LocalContentSpacing.current)) {
+        // ...
+    }
+}
+```
+
+`current` можно читать только из composable context либо из `CompositionLocalConsumerModifierNode`. Provider действует только на своё subtree; значение не является глобальной mutable переменной.
 
 ## 15.2. Когда CompositionLocal оправдан?
 
