@@ -402,10 +402,61 @@ ContextCompat.registerReceiver(
 Значит: никакой длительной работы, никаких корутин «на потом» — только постановка задачи
 в `WorkManager`.
 
+У `BroadcastReceiver` нет собственного постоянного поля `Context`: система передаёт временный context
+параметром `onReceive(context, intent)`. Его нельзя сохранять в поле или передавать в долгоживущую
+coroutine. Характер context зависит от регистрации:
+
+| Как зарегистрирован receiver | Какой context приходит в `onReceive` | Практическое следствие |
+| --- | --- | --- |
+| В manifest | framework `ReceiverRestrictedContext` | Нельзя вызывать `registerReceiver()` и `bindService()`; компонент и процесс после возврата из `onReceive` больше не удерживаются системой. |
+| Через `ContextCompat.registerReceiver` / `Context.registerReceiver` | context, в котором receiver исполняется; не нужно полагаться на его конкретный класс | Receiver живёт между `registerReceiver` и `unregisterReceiver`; система удерживает ссылку на context регистрации, поэтому Activity-регистрацию обязательно снимают в её lifecycle. |
+
+Для manifest receiver особенно опасен шаблон «запустить coroutine и вернуться»: даже `Dispatchers.IO`
+не удерживает процесс. Для долговечной или гарантированной работы ставьте `WorkManager`/`JobScheduler`;
+`JobIntentService` устарел и не является современным решением. `startService()` из receiver также не
+обходит background execution limits, а `startForegroundService()` требует быстро показать foreground
+notification и оправдан только для разрешённого пользовательски заметного сценария.
+
 `goAsync()` продлевает жизнь ресивера, но **не даёт нового бюджета**: тот же таймаут продолжает
 идти, вы лишь получаете право уйти с главного потока и обязанность вызвать `finish()` на
 `PendingResult`. Забыли `finish()` — получите ANR. Поэтому `goAsync()` уместен для работы на секунды
 (записать флаг, дёрнуть один запрос), а всё, что длиннее, всё равно уходит в `WorkManager`.
+
+Из receiver не открывают UI напрямую: background activity launch ограничен, а пользовательский путь
+должен идти через notification с `PendingIntent` в Activity. Если вызов `startActivity` из не-Activity
+context всё же допустим и необходим, нужен `Intent.FLAG_ACTIVITY_NEW_TASK`, но этот флаг не отменяет
+системные ограничения фонового запуска.
+
+### Почему receiver нужен `FLAG_ACTIVITY_NEW_TASK`
+
+Когда `Activity A` запускает `Activity B`, система знает task/back stack `A` и по умолчанию кладёт `B`
+поверх `A`. Нажатие Back затем возвращает пользователя к `A`. `BroadcastReceiver` не является Activity,
+не принадлежит пользовательскому окну и не имеет task, в который можно добавить новый экран. Поэтому
+`context.startActivity()` из `onReceive` без флага завершается `AndroidRuntimeException`: вызов выполнен
+вне `Activity` context, и нужно указать `FLAG_ACTIVITY_NEW_TASK`.
+
+```kotlin
+class OpenDetailsReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val detailIntent = Intent(context, DetailActivity::class.java)
+            .putExtra("id", intent.getStringExtra("id"))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+        context.startActivity(detailIntent)
+    }
+}
+```
+
+Флаг не значит «всегда создать новую task». Он говорит системе запустить Activity как точку входа task:
+система сначала ищет подходящую существующую task по `taskAffinity`; если находит, выводит её на передний
+план и доставляет новый `Intent` по её launch-mode правилам, иначе создаёт новую task с этой Activity
+в корне. Поэтому из receiver нельзя ожидать, что Back приведёт к экрану, который пользователь видел до
+broadcast: у receiver такого caller нет. Если нужен предсказуемый back stack из уведомления, создавайте
+его через `TaskStackBuilder`/Navigation deep link и `PendingIntent`, а не запускайте экран из receiver.
+
+Не добавляйте `FLAG_ACTIVITY_MULTIPLE_TASK`, чтобы «починить» запуск: он отключает поиск существующей task
+и плодит независимые задачи. `NEW_TASK` также нельзя использовать для запуска с результатом: receiver не
+является lifecycle owner и не может получить Activity Result.
 
 Для внутриприложенческих событий broadcast — неправильный инструмент: используйте `Flow`/`SharedFlow`.
 
