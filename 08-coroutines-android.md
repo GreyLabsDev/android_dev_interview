@@ -1,8 +1,328 @@
 # Корутины: Android-специфика, тестирование и паттерны для лайв-кодинга
 
-Дополнение к разделам 12–14 файла `Kotlin_Senior_Android_Guide.markdown`. Там разобрана механика языка:
-`suspend` и state machine, structured concurrency, отмена, диспетчеры, Flow, JMM. Здесь — то, чего там нет:
-как это живёт в Android-компонентах, как это тестировать и какие задачи дают на лайв-кодинге.
+Материал начинается с платформонезависимой модели Kotlin coroutines, а затем переходит к Android.
+На собеседовании сначала объясните владение задачами, отмену и ошибки; `viewModelScope` и `Dispatchers.Main`
+— лишь конкретное применение этих правил.
+
+---
+
+# 0. База Kotlin coroutines вне Android
+
+## 0.1. Что корутина даёт, а чего не даёт
+
+Корутина — лёгкая задача, которую можно **приостановить** без блокировки потока и позднее продолжить.
+`suspend` означает только, что функция может приостановиться: это не гарантия фонового потока, не запуск
+параллельно и не автоматическая отмена блокирующего I/O.
+
+```kotlin
+suspend fun loadProfile(api: Api): Profile {
+    delay(100)                 // приостанавливает coroutine, поток свободен для другой работы
+    return api.profile()
+}
+```
+
+У coroutine есть `CoroutineContext`: набор элементов, передаваемых детям. Главные из них:
+
+| Элемент | Отвечает за |
+| --- | --- |
+| `Job` | lifetime, дерево детей, отмену и завершение |
+| `CoroutineDispatcher` | где продолжить выполнение после suspension point |
+| `CoroutineName` | диагностику и логи |
+| `CoroutineExceptionHandler` | последнюю обработку необработанной ошибки root `launch` |
+
+`withContext(Dispatchers.IO)` переключает контекст **внутри уже существующей** корутины и ждёт результат;
+он не создаёт независимую фоновую задачу. Dispatcher выбирают по природе работы: `Default` для CPU-bound
+вычислений, `IO` для блокирующего I/O. Suspend-сетевой API обычно не требует вручную оборачивать каждый
+вызов в `IO`: библиотека должна сама не блокировать вызывающий поток.
+
+## 0.2. Structured concurrency и владение работой
+
+Structured concurrency означает, что каждая coroutine принадлежит родителю: родитель ждёт детей,
+отмена идёт вниз по дереву, а ошибка обычного ребёнка отменяет siblings и поднимается к владельцу.
+Поэтому suspend-функция не должна создавать `CoroutineScope(...)` «для удобства»: caller потеряет
+контроль над её lifetime, ошибками и тестированием.
+
+```kotlin
+suspend fun loadScreen(api: Api): Screen = coroutineScope {
+    val profile = async { api.profile() }
+    val recommendations = async { api.recommendations() }
+
+    Screen(profile.await(), recommendations.await())
+}
+```
+
+`coroutineScope` создаёт дочерний scope и возвращает результат только после завершения всех children.
+Если `recommendations()` падает, `profile` отменяется, а исключение получает caller. Это подходит, когда
+данные образуют одну атомарную операцию: экран без любого из двух ответов невалиден.
+
+Независимые задачи запускают в `supervisorScope` или под `SupervisorJob`: ошибка одного ребёнка не отменяет
+siblings. Но ошибка всё равно должна быть наблюдена через `await` или обработана внутри `launch`.
+
+```kotlin
+suspend fun refreshWidgets(api: Api): List<WidgetResult> = supervisorScope {
+    val weather = async { runCatching { api.weather() } }
+    val news = async { runCatching { api.news() } }
+
+    listOf(WidgetResult(weather.await()), WidgetResult(news.await()))
+}
+```
+
+Не используйте `supervisorScope` как способ «спрятать» ошибки. Он нужен, когда частичный результат имеет
+осмысленную бизнес-семантику; иначе fail-fast `coroutineScope` проще и корректнее.
+
+## 0.3. `launch` и `async` — разные контракты
+
+- `launch` возвращает `Job`: задача нужна ради side effect, результат не ожидается. Необработанная ошибка
+  у обычного child отменяет родителя; у root coroutine доходит до `CoroutineExceptionHandler`.
+- `async` возвращает `Deferred<T>`: задача производит значение. Ошибку нужно наблюдать через `await()`
+  (либо она отменит обычного родителя раньше). Создавать `async` и никогда не await-ить — ошибка дизайна.
+- `withContext` не является конкурентным builder: он выполняет блок последовательно относительно строки
+  вызова и возвращает его значение.
+
+Правильный параллельный fan-out сначала запускает все работы, затем ждёт результаты:
+
+```kotlin
+suspend fun loadDashboard(api: Api): Dashboard = coroutineScope {
+    val user = async { api.user() }
+    val feed = async { api.feed() }
+    val alerts = async { api.alerts() }
+
+    Dashboard(user.await(), feed.await(), alerts.await())
+}
+```
+
+`awaitAll(user, feed, alerts)` эквивалентен по fail-fast семантике и удобен для коллекции `Deferred`.
+Он не блокирует поток: ожидающая coroutine приостанавливается. Время выполнения независимых операций
+примерно равно $max(t_1, t_2, ..., t_n)$, а не $sum(t_1, t_2, ..., t_n)$, если у внешних ресурсов есть
+достаточная ёмкость.
+
+## 0.4. Ошибки и отмена
+
+Отмена кооперативна: `delay`, `await`, `withContext`, большинство suspend API и явная `ensureActive()`
+проверяют её. CPU-цикл обязан периодически уступать управление или проверять отмену сам.
+
+```kotlin
+suspend fun hashAll(values: List<ByteArray>): List<Hash> = withContext(Dispatchers.Default) {
+    values.map { bytes ->
+        ensureActive()
+        calculateHash(bytes)
+    }
+}
+```
+
+`CancellationException` — управляющий сигнал, а не прикладная ошибка. Не превращайте его в `Error`, не
+ретрайте и не проглатывайте широким `catch`:
+
+```kotlin
+try {
+    api.load()
+} catch (error: CancellationException) {
+    throw error
+} catch (error: IOException) {
+    showNetworkError(error)
+}
+```
+
+`CoroutineExceptionHandler` не заменяет обработку ошибок: он работает только для необработанных ошибок
+root `launch`, не ловит исключения `async` до `await`, и не даёт восстановить уже отменённое дерево.
+Обрабатывайте expected domain/network ошибки на границе use case или UI state; unexpected ошибки логируйте
+и дайте им завершить операцию.
+
+## 0.5. Параллелизм, ограничение и backpressure
+
+Конкурентность не равна параллелизму. Тысяча coroutines может ожидать сеть на нескольких потоках;
+CPU-bound работа действительно исполняется параллельно лишь в пределах потоков dispatcher и ядер CPU.
+Запуск `async` на каждый элемент без лимита может исчерпать сокеты, память, rate limit сервера или пул БД.
+
+Для доменного лимита («не более 8 запросов») используйте `Semaphore`; для ограничения выполнения
+CPU-задач на dispatcher — `Dispatchers.Default.limitedParallelism(n)`.
+
+```kotlin
+suspend fun <T, R> Iterable<T>.mapConcurrent(
+    concurrency: Int,
+    transform: suspend (T) -> R,
+): List<R> = coroutineScope {
+    require(concurrency > 0)
+    val semaphore = Semaphore(concurrency)
+
+    map { item ->
+        async { semaphore.withPermit { transform(item) } }
+    }.awaitAll()
+}
+```
+
+Этот вариант сохраняет порядок результата, но создаёт coroutine на каждый элемент. Для очень большой или
+бесконечной последовательности нужен bounded worker pool либо Flow с `flatMapMerge(concurrency)`, чтобы
+ограничить и число уже созданных задач. Лимит выбирают по измерениям и контрактам зависимостей, а не по
+числу ядер: для HTTP он часто ниже server rate limit, для CPU обычно близок к доступному parallelism.
+
+## 0.6. Рецепты владения scope
+
+Правило по умолчанию: use case и repository предоставляют `suspend fun`; scope выбирает слой, который
+владеет пользовательским сценарием. Так lifetime не прячется внутри data-слоя.
+
+```kotlin
+class LoadDashboardUseCase(private val api: DashboardApi) {
+    suspend operator fun invoke(): Dashboard = coroutineScope {
+        val profile = async { api.profile() }
+        val feed = async { api.feed() }
+        Dashboard(profile.await(), feed.await())
+    }
+}
+
+class DashboardViewModel(
+    private val loadDashboard: LoadDashboardUseCase,
+) : ViewModel() {
+    fun refresh() = viewModelScope.launch {
+        _state.value = DashboardState.Loading
+        _state.value = runCatching { loadDashboard() }
+            .fold(::DashboardState.Content, ::DashboardState.Error)
+    }
+}
+```
+
+Здесь уход с экрана отменяет `viewModelScope`, а через него — use case и оба запроса. `coroutineScope`
+в use case не дублирует ViewModel scope: он выражает, что два запроса являются одной операцией и должны
+быть дожданы до возврата.
+
+Для работы, сознательно переживающей caller, внешний scope передают через DI и обязательно дают ему
+владельца. Repository не создаёт scope сам:
+
+```kotlin
+class BookmarkRepository(
+    private val dataSource: BookmarkDataSource,
+    private val applicationScope: CoroutineScope,
+) {
+    fun bookmark(articleId: String): Job = applicationScope.launch {
+        dataSource.savePending(articleId)
+        dataSource.sync(articleId)
+    }
+}
+```
+
+Это допустимо только если контракт действительно fire-and-forget и вызывающий не ждёт результата. Для
+гарантированной доставки после смерти процесса одной coroutine недостаточно: сохраните намерение в БД
+и передайте выполнение `WorkManager`. `lifecycleScope` выбирают для View/Fragment-работы, которую не
+следует переживать уничтожение View; `rememberCoroutineScope()` — для событий Compose. Эти scopes не
+взаимозаменяемы с `viewModelScope`: например, запрос состояния экрана не должен отменяться на каждом
+пересоздании View.
+
+## 0.7. Таймауты и параллельная загрузка
+
+`withTimeout` задаёт deadline и при истечении отменяет свой блок через `TimeoutCancellationException`.
+Это отмена, а не обычная бизнес-ошибка: код внутри должен быть cooperative и освобождать ресурсы в
+`finally`. `withTimeoutOrNull` удобен, когда timeout ожидаем и `null` однозначно означает «результат не
+получен вовремя».
+
+### Общий deadline: либо весь dashboard, либо ошибка
+
+Если экран бесполезен без всех частей, общий timeout оборачивает весь `coroutineScope`. При истечении
+срока отменяются все дочерние `async`.
+
+```kotlin
+suspend fun loadDashboard(api: DashboardApi): Dashboard = withTimeout(1_500) {
+    coroutineScope {
+        val profile = async { api.profile() }
+        val feed = async { api.feed() }
+        val notifications = async { api.notifications() }
+
+        Dashboard(profile.await(), feed.await(), notifications.await())
+    }
+}
+```
+
+В UI `TimeoutCancellationException` переводят в отдельное состояние вроде `DashboardState.SlowNetwork`.
+Не ловите общий `CancellationException`: это поглотит и отмену ViewModel, которую нужно пробросить.
+
+### Индивидуальный deadline: отбросить только опоздавшую задачу
+
+Если виджеты независимы, используйте `supervisorScope` и timeout внутри каждой задачи. Быстрые результаты
+сохраняются, а истёкшая задача отменяется и превращается в понятный результат.
+
+```kotlin
+sealed interface LoadResult<out T> {
+    data class Value<T>(val value: T) : LoadResult<T>
+    data object TimedOut : LoadResult<Nothing>
+    data class Failed(val error: Throwable) : LoadResult<Nothing>
+}
+
+suspend fun <T> loadWithin(
+    timeoutMs: Long,
+    block: suspend () -> T,
+): LoadResult<T> = try {
+    withTimeout(timeoutMs) { LoadResult.Value(block()) }
+} catch (error: TimeoutCancellationException) {
+    LoadResult.TimedOut
+} catch (error: CancellationException) {
+    throw error
+} catch (error: Throwable) {
+    LoadResult.Failed(error)
+}
+
+suspend fun loadWidgets(api: WidgetsApi): Widgets = supervisorScope {
+    val weather = async { loadWithin(800) { api.weather() } }
+    val news = async { loadWithin(1_200) { api.news() } }
+    val stocks = async { loadWithin(500) { api.stocks() } }
+
+    Widgets(weather.await(), news.await(), stocks.await())
+}
+```
+
+Здесь `supervisorScope` нужен именно потому, что `Failed` и `TimedOut` — допустимые данные для каждого
+виджета. Если ошибка любой части должна отменять остальные, уберите `loadWithin` и используйте обычный
+`coroutineScope` с общим deadline.
+
+### Первый успешный ответ: отменить проигравшую реплику
+
+Для двух зеркал или cache/network race можно взять первый ответ и отменить проигравшую работу. Это нужно
+редко: лишний запрос может стоить денег или создать побочный эффект, поэтому применимо только к идемпотентным
+read-операциям.
+
+```kotlin
+suspend fun loadFromFastestReplica(api: ReplicaApi): Payload = coroutineScope {
+    val primary = async { api.primary() }
+    val secondary = async { api.secondary() }
+
+    try {
+        select {
+            primary.onAwait { it }
+            secondary.onAwait { it }
+        }
+    } finally {
+        primary.cancel()
+        secondary.cancel()
+    }
+}
+```
+
+`select` возвращает первый завершившийся `Deferred`, включая ошибку. Если нужен «первый успешный», а ошибка
+одной реплики не должна завершать поиск, потребуется `supervisorScope` и явная политика retry/fallback;
+не маскируйте ошибку простым `runCatching`, иначе легко получить бесконечное ожидание.
+
+### Тест deadline без реального ожидания
+
+`runTest` и `StandardTestDispatcher` позволяют проверить отмену задачи мгновенно в виртуальном времени:
+
+```kotlin
+@Test
+fun `drops only a widget that exceeds its timeout`() = runTest {
+    val api = FakeWidgetsApi(
+        weatherDelay = 100.milliseconds,
+        newsDelay = 2.seconds,
+        stocksDelay = 100.milliseconds,
+    )
+
+    val widgets = loadWidgets(api)
+
+    assertIs<LoadResult.Value<Weather>>(widgets.weather)
+    assertEquals(LoadResult.TimedOut, widgets.news)
+    assertIs<LoadResult.Value<Stocks>>(widgets.stocks)
+}
+```
+
+Такой тест поймает ошибку, при которой общий `coroutineScope` случайно отменяет успешные виджеты вместе
+с опоздавшим. В production timeout подбирают по SLO и наблюдаемой latency, а не по произвольному числу;
+timeout не исправляет зависшую неблокирующую операцию, если её API игнорирует отмену.
 
 ---
 
@@ -654,18 +974,28 @@ GlobalScope.launch { analytics.track(event) }   // ❌
 
 # 6. Чеклист самопроверки
 
-1. Какой scope вы возьмёте для отправки сообщения, которое должно уйти, даже если пользователь ушёл с экрана?
-2. Почему `SupervisorJob` обязателен в app-scoped scope?
-3. Чем `repeatOnLifecycle` отличается от простого `collect` в `lifecycleScope`?
-4. Что означает `WhileSubscribed(5000)` и что будет при `Eagerly`?
-5. Зачем `runTest` подменяет время и как прокрутить его вручную?
-6. `StandardTestDispatcher` vs `UnconfinedTestDispatcher` — когда какой?
-7. Какую именно ошибку предотвращает `MainDispatcherRule`?
-8. Почему тест `StateFlow` может не увидеть состояние `Loading` и как это чинить?
-9. Зачем `awaitClose` в `callbackFlow` и что будет без него?
-10. Почему `suspendCancellableCoroutine`, а не `suspendCoroutine`?
-11. Зачем джиттер в backoff и почему `CancellationException` не ретраят?
-12. Как ограничить параллелизм: `Semaphore` или `limitedParallelism`? В чём разница?
-13. Как обновить токен ровно один раз, если пять запросов получили 401 одновременно?
-14. Почему `flatMapLatest` в поиске, а не `flatMapMerge`?
-15. Чем `_state.update { }` лучше присваивания `_state.value = ...`?
+1. Что означает `suspend`, а чего он не гарантирует?
+2. Из каких ключевых элементов состоит `CoroutineContext` и за что отвечает каждый?
+3. Чем `withContext` отличается от запуска новой coroutine через `launch` или `async`?
+4. Что именно гарантирует structured concurrency?
+5. Когда нужна fail-fast семантика `coroutineScope`, а когда оправдан `supervisorScope`?
+6. Чем различаются контракты `launch`, `async` и `withContext`?
+7. Почему `async { ... }.await()` в той же строке не даёт параллелизма?
+8. Почему нельзя проглатывать `CancellationException` и как отменять долгий CPU-цикл?
+9. Почему `CoroutineExceptionHandler` не заменяет `try/catch` вокруг `await`?
+10. Чем конкурентность отличается от параллелизма и почему нельзя бездумно создать тысячи `async`?
+11. Когда выбирать `Semaphore`, `limitedParallelism` и bounded worker pool?
+12. Какой scope вы возьмёте для отправки сообщения, которое должно уйти, даже если пользователь ушёл с экрана?
+13. Почему `SupervisorJob` обязателен в app-scoped scope?
+14. Чем `repeatOnLifecycle` отличается от простого `collect` в `lifecycleScope`?
+15. Что означает `WhileSubscribed(5000)` и что будет при `Eagerly`?
+16. Зачем `runTest` подменяет время и как прокрутить его вручную?
+17. `StandardTestDispatcher` vs `UnconfinedTestDispatcher` — когда какой?
+18. Какую именно ошибку предотвращает `MainDispatcherRule`?
+19. Почему тест `StateFlow` может не увидеть состояние `Loading` и как это чинить?
+20. Зачем `awaitClose` в `callbackFlow` и что будет без него?
+21. Почему `suspendCancellableCoroutine`, а не `suspendCoroutine`?
+22. Зачем джиттер в backoff и почему `CancellationException` не ретраят?
+23. Как обновить токен ровно один раз, если пять запросов получили 401 одновременно?
+24. Почему `flatMapLatest` в поиске, а не `flatMapMerge`?
+25. Чем `_state.update { }` лучше присваивания `_state.value = ...`?
