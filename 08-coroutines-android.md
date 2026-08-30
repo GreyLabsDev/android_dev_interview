@@ -39,6 +39,77 @@ suspend fun loadProfile(api: Api): Profile {
 вычислений, `IO` для блокирующего I/O. Suspend-сетевой API обычно не требует вручную оборачивать каждый
 вызов в `IO`: библиотека должна сама не блокировать вызывающий поток.
 
+### Dispatchers: что планируют и как выбирать
+
+`CoroutineDispatcher` решает, в каком executor/потоке продолжится coroutine после suspension point. Он не
+закрепляет coroutine за одним потоком и не превращает блокирующий код в неблокирующий: `Thread.sleep`,
+синхронный HTTP-клиент или тяжёлый JSON parsing продолжают занимать поток выбранного dispatcher.
+
+| Dispatcher | Для каких операций | Чего не делать |
+| --- | --- | --- |
+| `Dispatchers.Main` | Android UI: обновить view/state, вызвать UI API; короткая логика после user action | network, disk, тяжёлый parsing или CPU-цикл на main |
+| `Dispatchers.Main.immediate` | Короткое обновление UI, когда coroutine уже на Main и важен порядок без постановки в main queue | не использовать как «более быстрый Main» для долгой работы; учитывать re-entrancy |
+| `Dispatchers.Default` | CPU-bound: сортировка, криптография, image/JSON processing, diff/маппинг больших коллекций | блокирующий I/O: он забирает потоки у CPU-задач |
+| `Dispatchers.IO` | Блокирующий I/O: JDBC, файлы, `InputStream`, legacy synchronous SDK | бездумно оборачивать suspend Retrofit/Room API, которое уже не блокирует caller |
+| `Dispatchers.Unconfined` | Редкие низкоуровневые сценарии и тесты | production UI/business-код: после первой suspension он возобновляется в потоке suspend-функции, порядок непредсказуем |
+
+`Main` на Android привязан к UI thread. `Default` использует пул, рассчитанный на доступный CPU parallelism.
+`IO` оптимизирован для блокирующих задач и допускает больше одновременно работающих блокировок; он разделяет
+потоки с `Default`, поэтому длительный блокирующий вызов на `Default` всё равно вредит общему пулу. Для
+доменного ограничения «не более N запросов» dispatcher недостаточен: нужен `Semaphore` или bounded worker
+pool (см. 0.5).
+
+Правило выбора: сначала выяснить, действительно ли операция блокирует поток. Для корректного suspend API
+обычно не нужен `withContext(IO)` вокруг каждого вызова. `withContext` ставят на границе с блокирующей или
+CPU-bound библиотекой и возвращают наружу результат; UI state обновляют обратно в `Main` только если текущий
+scope не гарантирует Main context.
+
+```kotlin
+suspend fun loadAvatar(source: LegacyAvatarSource): Avatar = withContext(Dispatchers.IO) {
+    source.readBlocking() // файловый/legacy blocking API
+}
+
+suspend fun buildSearchIndex(items: List<Item>): SearchIndex = withContext(Dispatchers.Default) {
+    items.groupBy(Item::normalizedTitle) // CPU-bound преобразование
+}
+
+class ProfileViewModel(private val api: ProfileApi) : ViewModel() {
+    fun refresh() = viewModelScope.launch { // viewModelScope уже использует Main.immediate
+        val profile = api.loadProfile() // suspend API сам не блокирует Main
+        _state.value = ProfileState.Content(profile)
+    }
+}
+```
+
+`withContext` сохраняет structured concurrency: caller приостанавливается, получает result/exception и
+отменяет блок вместе с собой. В отличие от `launch(Dispatchers.IO)`, он не создаёт fire-and-forget работу.
+Переключение туда-сюда имеет цену, поэтому не оборачивайте каждую маленькую строку в `withContext`; выбирайте
+dispatcher на границе значимой операции. Для тестируемости dispatcher инъецируют в data/use-case слой, а в
+JVM-тесте подменяют `TestDispatcher` (см. 2.6).
+
+### Что такое `Continuation`
+
+`Continuation<T>` — техническое представление «как продолжить coroutine позднее»: в нём есть результат
+`T` либо exception и `CoroutineContext`, в котором продолжение должно возобновиться. Компилятор превращает
+`suspend fun` в state machine и неявно передаёт continuation последним параметром. Упрощённо:
+
+```kotlin
+suspend fun loadName(): String = api.loadName()
+
+// Концептуально, не реальная сигнатура bytecode:
+fun loadName(continuation: Continuation<String>): Any
+```
+
+На suspension point coroutine сохраняет локальные переменные и текущий state, возвращает управление потоку,
+а позже suspend API вызывает `continuation.resume(value)` или `resumeWithException(error)`. Dispatcher из
+`continuation.context` планирует дальнейшее выполнение в нужном context. Поэтому `delay` не держит поток:
+он лишь планирует момент, когда continuation будет возобновлён.
+
+Обычно continuation вручную не создают. На границе callback API используют `suspendCancellableCoroutine`:
+он даёт `CancellableContinuation<T>`, чтобы однократно завершить результат и отменить внешнюю операцию при
+отмене родительской coroutine. Callback не должен вызывать `resume` дважды; повторный результат нужно
+игнорировать или защитить контрактом API.
+
 ## 0.2. Structured concurrency и владение работой
 
 Structured concurrency означает, что каждая coroutine принадлежит родителю: родитель ждёт детей,

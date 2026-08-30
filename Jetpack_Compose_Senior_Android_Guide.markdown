@@ -1204,7 +1204,7 @@ Composable body должен описывать UI. Network request, registratio
 
 ## 8.1. `LaunchedEffect`
 
-Запускает coroutine при входе в Composition. При смене key старая coroutine отменяется и запускается новая; при выходе — отменяется.
+Запускает coroutine, когда call site входит в успешно применённую Composition. При смене key старая coroutine отменяется и запускается новая; при выходе call site из Composition coroutine отменяется.
 
 ```kotlin
 LaunchedEffect(userId) {
@@ -1213,6 +1213,8 @@ LaunchedEffect(userId) {
 ```
 
 Бизнес-загрузка обычно принадлежит ViewModel, чтобы переживать UI recreation. `LaunchedEffect` лучше подходит для composition-bound задач: focus, scroll, snackbar, animation.
+
+Один экземпляр `LaunchedEffect(key)` не выполняет свой блок на каждую recomposition. Пока call site остаётся в Composition и все keys равны предыдущим по `==`, coroutine продолжает работу ровно один раз. Смена любого key создаёт новый lifecycle: предыдущая coroutine получает cancellation, а новая запускается с новыми captured values. Поэтому `LaunchedEffect(Unit)` выполняется один раз на lifetime **конкретного call site**; удаление и повторное добавление composable создаст новый запуск.
 
 ## 8.2. Как выбирать effect key?
 
@@ -1254,7 +1256,7 @@ LaunchedEffect(Unit) {
 
 ## 8.4. `DisposableEffect`
 
-Для регистрации ресурса с обязательным cleanup:
+Для регистрации ресурса с обязательным cleanup. Блок effect выполняется один раз при входе call site с данным набором keys, а `onDispose` — ровно один раз перед его заменой или удалением:
 
 ```kotlin
 DisposableEffect(lifecycleOwner) {
@@ -1272,9 +1274,11 @@ DisposableEffect(lifecycleOwner) {
 
 Все изменяемые dependencies должны быть key либо доступны через `rememberUpdatedState`.
 
+При смене `lifecycleOwner` порядок такой: сначала вызывается `onDispose` старого observer, затем effect block регистрирует observer для нового owner. При обычной recomposition с теми же keys не выполняются ни регистрация, ни cleanup. `onDispose` должен быть быстрым, идемпотентным на уровне ресурса и всегда освобождать ровно то, что зарегистрировал effect.
+
 ## 8.5. `SideEffect`
 
-Выполняется после каждой успешно применённой Composition. Подходит для публикации Compose state во внешний объект:
+Выполняется после каждой успешно применённой Composition, в которой достигнут этот call site. Подходит для публикации Compose state во внешний объект:
 
 ```kotlin
 SideEffect {
@@ -1282,7 +1286,19 @@ SideEffect {
 }
 ```
 
-Не предназначен для дорогого I/O и не имеет cleanup.
+В отличие от keyed effects, у `SideEffect` нет keys и нет собственного lifecycle: повторная успешная recomposition означает ещё один вызов. Если composition отменена, упала или не была применена, `SideEffect` не запускается. Он не предназначен для дорогого I/O, coroutine или ресурсов с cleanup.
+
+## 8.5.1. Сколько раз выполняются effects?
+
+| Событие | `LaunchedEffect(keys)` | `DisposableEffect(keys)` | `SideEffect` |
+|---|---|---|---|
+| Первый вход call site в Composition | Запускает одну coroutine | Выполняет effect block, регистрирует ресурс | Выполняется после apply Composition |
+| Recomposition, keys не изменились | Не перезапускается | Не выполняется повторно | Выполняется снова после apply |
+| Recomposition, изменился любой key | Отменяет старую coroutine, запускает новую | Вызывает старый `onDispose`, затем effect block заново | Выполняется после apply |
+| Call site ушёл из Composition | Отменяет coroutine | Вызывает `onDispose` | Не выполняется |
+| Composition не была успешно применена | Не стартует новую работу | Не регистрирует новый ресурс | Не выполняется |
+
+Пример счётчика: при первом показе `Profile(userId = 1)` запускаются все три. Изменение только `title`, если он не key, приводит к ещё одному `SideEffect`, но не к новому `LaunchedEffect` или `DisposableEffect`. При переходе на `userId = 2` keyed effects перезапускаются, а `SideEffect` снова публикует уже новый UI state.
 
 ## 8.6. `rememberCoroutineScope`
 
