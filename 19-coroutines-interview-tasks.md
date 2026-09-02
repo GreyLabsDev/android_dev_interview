@@ -2,7 +2,7 @@
 
 Задачи расположены от middle-сценариев с `suspend`-функциями до senior-уровня: конкурентных `Flow`-пайплайнов, lifecycle, сессий и тестов. Каждая рассчитана на обсуждение решения вслух: сначала назовите инвариант и владельца работы, затем исправьте код или объясните порядок выполнения.
 
-Обозначения: **[Исправить]** - найти дефект в коде; **[Разобрать]** - предсказать выполнение; **[Реализовать]** - дописать решение.
+Обозначения: **[Исправить]** - найти дефект в коде; **[Разобрать]** - предсказать выполнение; **[Реализовать]** - дописать решение. Часть задач комбинирует пометки, например «Разобрать и исправить»: сначала нужно объяснить фактическое поведение, а затем поправить код.
 
 Предполагаются импорты из `kotlinx.coroutines`, `kotlinx.coroutines.flow` и, где нужно, AndroidX.
 
@@ -12,7 +12,7 @@
 
 ### 1. Граница dispatcher и cancellation
 
-**[Исправить, senior]** Repository вызывается с Main и обслуживает UI, background sync и `WorkManager`. `legacyApi.fetchAndParse()` блокирует поток, а `cache.write()` должен быть отменяемым вместе с caller. Найдите две архитектурные ошибки и перепишите контракт так, чтобы UI не блокировался, cancellation не терялась, а dispatcher можно было заменить в тесте.
+**[Исправить, senior]** `ProfileRepository` вызывается и из `ViewModel` (Main), и из фонового `WorkManager`-воркера. `legacyApi.fetchAndParse()` - синхронный блокирующий вызов. У класса два самостоятельных недостатка: (1) блокирующий вызов не имеет собственной границы диспетчера и исполняется на потоке caller-а, будь то Main или worker thread; (2) даже если добавить диспетчер прямо в теле функции, его нельзя будет подменить в unit-тесте. Назовите оба недостатка и перепишите репозиторий так, чтобы UI не блокировался, cancellation не терялась, а dispatcher был инъецируемым.
 
 ```kotlin
 class ProfileRepository(
@@ -44,7 +44,13 @@ data class ProfileScreen(
     val avatar: Avatar,
 )
 
-suspend fun loadProfileScreen(): ProfileScreen = TODO()
+suspend fun loadProfileScreen(
+    profileApi: ProfileApi,
+    permissionsStore: PermissionsStore,
+    avatarDecoder: AvatarDecoder,
+    io: CoroutineDispatcher,
+    default: CoroutineDispatcher,
+): ProfileScreen = TODO()
 ```
 
 ### 3. Потерянная отмена
@@ -186,6 +192,8 @@ sealed interface UiState {
     data class Content(val items: List<Item>) : UiState
     data class Error(val cause: Throwable) : UiState
 }
+
+fun searchState(queries: Flow<String>, api: Api): Flow<UiState> = TODO()
 ```
 
 ### 14. `flow {}` и context preservation
@@ -202,10 +210,10 @@ fun loadItems(): Flow<List<Item>> = flow {
 
 ### 15. Backpressure: последние данные важнее всех
 
-**[Реализовать, senior]** Сенсор выдаёт позицию 60 раз в секунду, `render` занимает 100 мс. Нужна отзывчивая карта: во время рендера промежуточные позиции можно отбросить, но после него нужно отрисовать последнюю доступную. Выберите оператор и объясните, почему не `buffer()`.
+**[Реализовать, senior]** Сенсор выдаёт позицию 60 раз в секунду, `render` занимает 100 мс. Нужна отзывчивая карта: во время рендера промежуточные позиции можно отбросить, но после него нужно отрисовать последнюю доступную. `scope` принадлежит владельцу экрана и отменяется вместе с ним. Выберите оператор и объясните, почему не `buffer()`.
 
 ```kotlin
-fun renderPositions(positions: Flow<Position>): Job = TODO()
+fun renderPositions(positions: Flow<Position>, scope: CoroutineScope): Job = TODO()
 ```
 
 ### 16. Callback API в Flow
@@ -222,6 +230,8 @@ interface LocationClient {
         fun onError(error: Throwable)
     }
 }
+
+fun LocationClient.locations(): Flow<Location> = TODO()
 ```
 
 ### 17. `StateFlow`, lifecycle и лишняя работа
@@ -266,7 +276,7 @@ class TokenRefresher(private val authApi: AuthApi) {
 
 ### 20. Детерминированный тест Flow и retry
 
-**[Реализовать, senior+]** Напишите тест с `runTest` для функции ниже. Она должна выдать `Loading`, затем после двух `IOException` - `Content`. Тест не должен использовать реальный `delay` или `Thread.sleep`.
+**[Разобрать и исправить, senior+]** Функция ниже задумана так: сначала `Loading`, затем после двух `IOException` - `Content`. Но `retryWhen` при `true` перезапускает **весь** upstream `flow {}` заново, включая `emit(UiState.Loading)`. Напишите тест с `runTest` (без реального `delay`/`Thread.sleep`), который зафиксирует фактическую последовательность состояний, а затем исправьте функцию так, чтобы `Loading` эмитился ровно один раз независимо от числа повторов, и обновите тест под исправленную версию.
 
 ```kotlin
 fun loadWithRetry(api: Api): Flow<UiState> = flow {
@@ -540,7 +550,7 @@ fun loadItems(): Flow<List<Item>> = flow {
 `collectLatest` отменяет текущий `render`, когда приходит новая позиция; после паузы выполнится render последней. Это подходит, только если `render` cooperative/cancellable.
 
 ```kotlin
-fun renderPositions(positions: Flow<Position>): Job = scope.launch {
+fun renderPositions(positions: Flow<Position>, scope: CoroutineScope): Job = scope.launch {
     positions.collectLatest { position -> render(position) }
 }
 ```
@@ -576,7 +586,7 @@ Cold `catalog()` будет запущен для каждого collector. Пр
 ```kotlin
 class CatalogViewModel(repository: CatalogRepository) : ViewModel() {
     val state: StateFlow<UiState> = repository.catalog()
-        .map< List<Item>, UiState> { UiState.Content(it) }
+        .map { UiState.Content(it) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), UiState.Loading)
 }
 
@@ -640,11 +650,50 @@ class TokenRefresher(private val authApi: AuthApi) {
 
 ## 20. Детерминированный тест Flow и retry
 
-`runTest` даёт virtual time, а `advanceUntilIdle()` продвигает два интервала по секунде без реального ожидания.
+`retryWhen` при `true` перезапускает upstream `flow {}` с начала, поэтому `Loading` эмитится заново перед каждой попыткой. При двух `IOException` и третьей успешной попытке реальная последовательность - `[Loading, Loading, Loading, Content]`, а не `[Loading, Content]`. `runTest` даёт virtual time, а `advanceUntilIdle()` продвигает оба интервала `delay(1_000)` без реального ожидания.
 
 ```kotlin
 @Test
-fun `emits loading then content after two retries`() = runTest {
+fun `retryWhen re-emits Loading before every attempt`() = runTest {
+    var calls = 0
+    val api = object : Api {
+        override suspend fun items(): List<Item> {
+            calls += 1
+            if (calls < 3) throw IOException("temporary")
+            return listOf(Item("1"))
+        }
+    }
+
+    val states = mutableListOf<UiState>()
+    val job = launch { loadWithRetry(api).toList(states) }
+
+    advanceUntilIdle()
+
+    assertEquals(
+        listOf(UiState.Loading, UiState.Loading, UiState.Loading, UiState.Content(listOf(Item("1")))),
+        states,
+    )
+    assertEquals(3, calls)
+    job.cancel()
+}
+```
+
+Чтобы `Loading` эмитился один раз независимо от числа повторов, retry должен оборачивать только сетевой вызов, а `Loading` эмитить снаружи `retryWhen` через `onStart` - он выполняется один раз при подписке на итоговый flow и не перезапускается вместе с upstream:
+
+```kotlin
+fun loadWithRetry(api: Api): Flow<UiState> = flow {
+    emit(UiState.Content(api.items()))
+}.retryWhen { cause, attempt ->
+    cause is IOException && attempt < 2 && run {
+        delay(1_000)
+        true
+    }
+}.onStart { emit(UiState.Loading) }
+```
+
+```kotlin
+@Test
+fun `emits loading once then content after two retries`() = runTest {
     var calls = 0
     val api = object : Api {
         override suspend fun items(): List<Item> {
@@ -665,7 +714,7 @@ fun `emits loading then content after two retries`() = runTest {
 }
 ```
 
-Альтернатива - Turbine: `awaitItem()` для `Loading`, затем `advanceTimeBy(2_000)` и `awaitItem()` для `Content`. Для production dispatcher инъецируют `CoroutineDispatcher`/`CoroutineScope`, а не подменяют глобальный `Dispatchers`.
+Альтернатива - Turbine: `awaitItem()` на каждое состояние с `advanceTimeBy(1_000)` между попытками вместо `toList`/`advanceUntilIdle`. Для production dispatcher/scope инъецируют явно, а не подменяют глобальный `Dispatchers`.
 
 ---
 

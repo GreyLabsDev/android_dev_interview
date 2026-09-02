@@ -1,10 +1,27 @@
-import { isValidElement, useEffect, useState, type ReactNode } from 'react'
+import { isValidElement, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import rehypeSanitize from 'rehype-sanitize'
 import rehypeSlug from 'rehype-slug'
 import remarkGfm from 'remark-gfm'
 import { materials } from '../generated/materials'
+
+// Материал, где заголовки задач (h3) и решений (h2) пронумерованы одинаково -
+// это позволяет автоматически связать их без ручного подбора якорей.
+const TASK_SOLUTION_MATERIAL_SLUG = '19-coroutines-interview-tasks'
+
+function headingPlainText(node: ReactNode): string {
+  if (typeof node === 'string') return node
+  if (typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(headingPlainText).join('')
+  if (isValidElement<{ children?: ReactNode }>(node)) return headingPlainText(node.props.children)
+  return ''
+}
+
+function headingNumber(node: ReactNode): number | null {
+  const match = /^(\d+)\./u.exec(headingPlainText(node).trim())
+  return match ? Number(match[1]) : null
+}
 
 function extractCode(children: ReactNode) {
   if (!isValidElement<{ children?: ReactNode }>(children)) return ''
@@ -60,6 +77,21 @@ export function TheoryPage() {
     }
     scrollToSection(section)
   }, [material?.slug, searchParams])
+
+  const taskSolutionSections = useMemo(() => {
+    const tasks = new Map<number, string>()
+    const solutions = new Map<number, string>()
+    if (material?.slug === TASK_SOLUTION_MATERIAL_SLUG) {
+      for (const heading of material.headings) {
+        const match = /^(\d+)\.\s/u.exec(heading.title)
+        if (!match) continue
+        const number = Number(match[1])
+        if (heading.depth === 3) tasks.set(number, heading.slug)
+        else if (heading.depth === 2) solutions.set(number, heading.slug)
+      }
+    }
+    return { tasks, solutions }
+  }, [material])
 
   if (!material || requestedMaterialMissing) {
     return (
@@ -135,6 +167,34 @@ export function TheoryPage() {
           rehypePlugins={[rehypeSlug, rehypeSanitize]}
           components={{
             pre: PreBlock,
+            h2: ({ id, children, ...props }) => {
+              const number = headingNumber(children)
+              const target = number !== null ? taskSolutionSections.tasks.get(number) : undefined
+              return (
+                <h2 id={id} {...props}>
+                  {children}
+                  {target && (
+                    <button type="button" className="heading-jump-link" onClick={() => selectSection(target)}>
+                      ← Условие {number}
+                    </button>
+                  )}
+                </h2>
+              )
+            },
+            h3: ({ id, children, ...props }) => {
+              const number = headingNumber(children)
+              const target = number !== null ? taskSolutionSections.solutions.get(number) : undefined
+              return (
+                <h3 id={id} {...props}>
+                  {children}
+                  {target && (
+                    <button type="button" className="heading-jump-link" onClick={() => selectSection(target)}>
+                      Решение {number} →
+                    </button>
+                  )}
+                </h3>
+              )
+            },
             a: ({ href, children, ...props }) => {
               const external = href?.startsWith('http')
               return (

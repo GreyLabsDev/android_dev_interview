@@ -533,6 +533,20 @@ progress::-webkit-progress-value {
   font-size: 1.3rem;
 }
 
+.heading-jump-link {
+  margin-left: 12px;
+  padding: 3px 10px;
+  vertical-align: middle;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 0.68rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
 .markdown-article p,
 .markdown-article li {
   color: var(--article-text);
