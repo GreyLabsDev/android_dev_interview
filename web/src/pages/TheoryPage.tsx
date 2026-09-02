@@ -6,9 +6,9 @@ import rehypeSlug from 'rehype-slug'
 import remarkGfm from 'remark-gfm'
 import { materials } from '../generated/materials'
 
-// Материал, где заголовки задач (h3) и решений (h2) пронумерованы одинаково -
+// Материалы, где заголовки задач (h3) и решений (h2) пронумерованы одинаково -
 // это позволяет автоматически связать их без ручного подбора якорей.
-const TASK_SOLUTION_MATERIAL_SLUG = '19-coroutines-interview-tasks'
+const TASK_SOLUTION_MATERIAL_SLUGS = new Set(['19-coroutines-interview-tasks', '20-kotlin-language-interview-tasks'])
 
 function headingPlainText(node: ReactNode): string {
   if (typeof node === 'string') return node
@@ -81,7 +81,7 @@ export function TheoryPage() {
   const taskSolutionSections = useMemo(() => {
     const tasks = new Map<number, string>()
     const solutions = new Map<number, string>()
-    if (material?.slug === TASK_SOLUTION_MATERIAL_SLUG) {
+    if (material?.slug !== undefined && TASK_SOLUTION_MATERIAL_SLUGS.has(material.slug)) {
       for (const heading of material.headings) {
         const match = /^(\d+)\.\s/u.exec(heading.title)
         if (!match) continue
