@@ -23,20 +23,14 @@ export function AppLayout() {
           </nav>
           <button
             aria-checked={mode === 'dark'}
-            aria-label={
-              mode === 'dark'
-                ? 'Использовать тему устройства'
-                : 'Включить принудительную тёмную тему'
-            }
+            aria-label="Темная тема"
             className="theme-toggle"
             role="switch"
-            title={mode === 'dark' ? 'Тёмная тема' : 'Тема устройства'}
+            title="Темная тема"
             type="button"
             onClick={toggle}
           >
-            <span className="theme-label">
-              {mode === 'dark' ? 'Тёмная' : 'Как на устройстве'}
-            </span>
+            <span className="theme-label">Темная тема</span>
             <span aria-hidden="true" className="switch-track">
               <span className="switch-thumb" />
             </span>
