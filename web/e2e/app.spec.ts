@@ -31,7 +31,7 @@ test('scrolls to a theory section from the table of contents', async ({ page }) 
   await expect(page).toHaveURL(new RegExp(`section=${encodeURIComponent(sectionSlug)}`))
 })
 
-test('forces dark theme and returns to device theme', async ({ page }) => {
+test('toggles the dark theme', async ({ page }) => {
   await page.goto('/')
   const themeSwitch = page.getByRole('switch')
 
@@ -44,5 +44,6 @@ test('forces dark theme and returns to device theme', async ({ page }) => {
   await expect(page.getByRole('switch')).toHaveAttribute('aria-checked', 'true')
 
   await page.getByRole('switch').click()
-  await expect(page.locator('html')).not.toHaveAttribute('data-theme')
+  await expect(page.getByRole('switch')).toHaveAttribute('aria-checked', 'false')
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
 })
