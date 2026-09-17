@@ -10,6 +10,8 @@
 Markdown-материалов. Инструкции по локальному запуску, проверкам и публикации на GitHub Pages
 находятся в [`web/README.md`](web/README.md).
 
+Открыть тренажёр: [greylabsdev.github.io/android_dev_interview](https://greylabsdev.github.io/android_dev_interview/).
+
 ## Карта материалов
 
 | Файл | Что внутри |
