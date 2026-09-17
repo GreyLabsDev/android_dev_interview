@@ -1,50 +1,27 @@
-import { useEffect, useLayoutEffect, useState } from 'react'
+import { useLayoutEffect, useState } from 'react'
 
-export type ThemeMode = 'light' | 'dark'
+export type ThemeMode = 'system' | 'dark'
 
 const STORAGE_KEY = 'android-interview-trainer:theme'
 
-function systemMode(): ThemeMode {
-  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-}
-
-function initialPreference(): ThemeMode | null {
-  const storedPreference = localStorage.getItem(STORAGE_KEY)
-
-  return storedPreference === 'dark' || storedPreference === 'light'
-    ? storedPreference
-    : null
+function initialMode(): ThemeMode {
+  return localStorage.getItem(STORAGE_KEY) === 'dark' ? 'dark' : 'system'
 }
 
 export function useThemeMode() {
-  const [preference, setPreference] = useState<ThemeMode | null>(initialPreference)
-  const [systemTheme, setSystemTheme] = useState<ThemeMode>(systemMode)
-  const mode = preference ?? systemTheme
+  const [mode, setMode] = useState<ThemeMode>(initialMode)
 
   useLayoutEffect(() => {
-    document.documentElement.dataset.theme = mode
-
-    if (preference === null) {
-      localStorage.removeItem(STORAGE_KEY)
+    if (mode === 'dark') {
+      document.documentElement.dataset.theme = 'dark'
     } else {
-      localStorage.setItem(STORAGE_KEY, preference)
+      delete document.documentElement.dataset.theme
     }
-  }, [mode, preference])
-
-  useEffect(() => {
-    if (preference !== null) {
-      return
-    }
-
-    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
-    const updateSystemTheme = () => setSystemTheme(mediaQuery.matches ? 'dark' : 'light')
-
-    mediaQuery.addEventListener('change', updateSystemTheme)
-    return () => mediaQuery.removeEventListener('change', updateSystemTheme)
-  }, [preference])
+    localStorage.setItem(STORAGE_KEY, mode)
+  }, [mode])
 
   return {
     mode,
-    toggle: () => setPreference((current) => (current ?? systemTheme) === 'dark' ? 'light' : 'dark'),
+    toggle: () => setMode((current) => (current === 'dark' ? 'system' : 'dark')),
   }
 }
