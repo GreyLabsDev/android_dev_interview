@@ -578,7 +578,7 @@ export const kotlinQuestions: Question[] = [
       mechanism: 'Ссылка `readOnly` не предоставляет mutating API, но исходная mutable-ссылка всё ещё изменяет тот же список. Для независимого snapshot нужен defensive copy или persistent immutable collection.',
       trap: 'Тип view ограничивает операции конкретного владельца ссылки, но не контролирует aliasing.',
     },
-    source: { file: sourceFile, section: '8.1. Read-only коллекция — это immutable коллекция?' },
+    source: { file: sourceFile, section: '8.2. Read-only коллекция — это immutable коллекция?' },
     tags: ['collections', 'read-only', 'immutability', 'code-trap'],
   },
   {
@@ -600,7 +600,7 @@ export const kotlinQuestions: Question[] = [
       mechanism: 'Он обрабатывает элементы лениво через pipeline; это полезно на больших входах и при `first`/`take`. На маленьких коллекциях eager-код может быть быстрее, поэтому решение подтверждают benchmark или profile.',
       trap: '`Sequence` синхронен и не предназначен для suspend-операций.',
     },
-    source: { file: sourceFile, section: '8.3. Iterable против Sequence' },
+    source: { file: sourceFile, section: '8.6. Iterable против Sequence' },
     tags: ['sequence', 'collections', 'performance'],
   },
   {
@@ -622,7 +622,7 @@ export const kotlinQuestions: Question[] = [
       mechanism: 'Generic `Array<Int>` требует reference-представления элементов, тогда как `IntArray` хранит примитивы непосредственно. На больших массивах это влияет на память и GC.',
       trap: 'Содержимое массивов сравнивают через `contentEquals`, а обычное `==` не даёт ожидаемой value-семантики элементов.',
     },
-    source: { file: sourceFile, section: '8.6. Массивы и примитивные массивы' },
+    source: { file: sourceFile, section: '8.9. Массивы и примитивные массивы' },
     tags: ['arrays', 'boxing', 'performance'],
   },
   {
