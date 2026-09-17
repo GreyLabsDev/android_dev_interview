@@ -66,6 +66,167 @@ class App : Application() {
 - `<property>` — современный способ передавать платформе флаги совместимости.
 - Manifest merger склеивает манифесты библиотек; `tools:node="remove"`, `tools:replace` — инструменты разрешения конфликтов. Хорошая практика senior — периодически смотреть итоговый merged manifest: там регулярно обнаруживаются разрешения, которых вы не просили.
 
+## 1.4. Cold start: от нажатия на launcher до первого кадра
+
+Точный внутренний код system server меняется между релизами Android, но порядок ответственности стабилен.
+Cold start — процесса приложения ещё нет; warm start использует живой процесс, но может создать новую Activity;
+hot start лишь возвращает существующую Activity/task на передний план. Ускорять надо сценарий, измеренный через
+Macrobenchmark/Perfetto, а не называть любой запуск «cold».
+
+1. Launcher отправляет explicit `Intent` в `ActivityTaskManager`/`ActivityManager` внутри `system_server`.
+    Система проверяет manifest, exported/permission, launch mode и task/back stack, выбирает target Activity.
+2. Если процесса с нужным UID/process name нет, `ActivityManagerService` просит Zygote создать его. Zygote делает
+    `fork()`: процесс наследует предварительно загруженные framework-классы и страницы памяти через copy-on-write,
+    затем запускает runtime приложения с его UID, SELinux sandbox и class loader.
+3. В новом процессе `ActivityThread.main()` создаёт main `Looper`/`MessageQueue`, устанавливает Binder-связь с
+    system server и получает `bindApplication`. `LoadedApk` создаёт class loader приложения; runtime загружает DEX,
+    ресурсы и данные пакета. Это ещё не ваш `Application`.
+4. `ActivityThread.handleBindApplication()` создаёт `ContextImpl`, затем экземпляр `Application` из
+    `android:name` через `Instrumentation.newApplication()` и вызывает `Application.attachBaseContext()`.
+    Здесь framework и библиотеки могут подключить multidex/split compatibility; тяжёлой работы быть не должно.
+5. Сначала создаются зарегистрированные в манифесте `ContentProvider` этого процесса и вызываются их `onCreate()`.
+    Поэтому provider-based auto-init библиотек влияет на старт **до** `Application.onCreate()`.
+6. Вызывается `Application.onCreate()`. Здесь должны остаться только зависимости, без которых нельзя построить
+    первый экран: минимальный DI-граф, crash handler или конфигурация, если они действительно нужны немедленно.
+7. System server отправляет транзакцию запуска Activity. `ActivityThread` через `Instrumentation` создаёт её
+    экземпляр, вызывает `Activity.attach(...)`, передаёт `Context`, `Window`, `Application`, `Intent`, token и
+    `ActivityInfo`, затем выполняет `onCreate(savedInstanceState) -> onStart() -> onPostResume()/onResume()`.
+    `setContentView` создаёт View hierarchy либо Compose composition; measure/layout/draw формируют первый кадр.
+8. `Choreographer` синхронизирует работу main thread с VSYNC, `SurfaceFlinger` композитит буферы. Первый кадр
+    завершает TTID; всё, что пользователь увидит позже (асинхронные данные, lazy UI), входит в TTFD.
+
+`Instrumentation` является framework-точкой создания Activity и доставки lifecycle, поэтому test runner может
+подменять её. Разработчик не инстанцирует Activity через конструктор и не вызывает lifecycle вручную. Порядок
+`attachBaseContext -> providers -> Application.onCreate -> Activity` важнее запоминания закрытых классов: он
+объясняет, почему тяжёлый `ContentProvider` или eager SDK ухудшает cold start.
+
+## 1.5. Как исходники становятся APK или AAB
+
+`APK` — подписанный ZIP-архив, который устанавливает устройство. `AAB` — publish-артефакт: Play использует его
+для генерации device-specific split APK (base, language, density, ABI и dynamic feature splits); устройство не
+устанавливает `.aab` напрямую. При локальной установке bundletool также превращает AAB в набор APK.
+
+Упрощённый pipeline Android Gradle Plugin для каждого variant (`debug`, `release`, flavor):
+
+1. Gradle разрешает зависимости и варианты AAR. AAR приносит compiled code/resources, manifest, ProGuard rules,
+    assets, `jni/<abi>/*.so` и metadata; manifest merger создаёт итоговый manifest.
+2. Kotlin compiler компилирует `.kt` в JVM bytecode, Java compiler — `.java` в bytecode. KSP/KAPT и resource/data
+    binding до этого генерируют исходники. Локальные и dependency JAR/AAR объединяются на уровне программы.
+3. AAPT2 компилирует каждый ресурс, линкует их с manifest и создаёт `resources.arsc`, таблицу resource ID и
+    сгенерированный `R`-код. XML layouts, drawables и values получают бинарное представление; `assets/` не
+    компилируются и доступны по имени через `AssetManager`.
+4. D8 преобразует JVM bytecode в один или несколько `classes*.dex`; R8 в release сначала выполняет shrinking,
+    оптимизацию и obfuscation по достижимости, затем отдаёт результат D8. Правила keep нужны для reflection, JNI,
+    сериализации и классов, создаваемых framework по имени.
+5. AGP собирает DEX, ресурсы, assets, итоговый `AndroidManifest.xml`, native `.so` и метаданные в APK/splits.
+    Zipalign выравнивает entries для эффективного memory mapping, затем apksigner добавляет v2/v3 (и при нужной
+    конфигурации v1/v4) подписи. Любое изменение архива после подписи делает APK недействительным.
+
+Типичное содержимое base APK:
+
+| Путь | Откуда и назначение |
+| --- | --- |
+| `AndroidManifest.xml` | merged manifest в бинарном XML; его читает PackageManager |
+| `classes.dex`, `classes2.dex`, ... | DEX из Kotlin/Java и зависимостей после D8/R8 |
+| `resources.arsc`, `res/` | скомпилированные и обработанные AAPT2 ресурсы |
+| `assets/` | файлы из `src/main/assets` и зависимостей без resource ID |
+| `lib/<abi>/*.so` | native-библиотеки из `jniLibs`, NDK/CMake/ndk-build или AAR |
+| `META-INF/` | ZIP/JAR metadata; не путать с современной APK signature block |
+
+DEX не исполняется «как Java class»: ART загружает его и создаёт/использует оптимизированные артефакты (`dexopt`,
+profile-guided compilation) отдельно от содержимого APK. Resources и native libraries могут быть вынесены в
+configuration/ABI splits, поэтому нельзя строить логику на предположении, что все файлы лежат в одном base APK.
+Проверяйте артефакт через Android Studio APK Analyzer, `apkanalyzer` или `bundletool`, включая итоговый manifest,
+размер DEX/resources и все ABI.
+
+## 1.6. NDK, C/C++ и JNI: варианты интеграции
+
+NDK нужен, когда есть измеримая причина: общий движок с другими платформами, кодеки/медиа, криптография из
+проверенной native-библиотеки, ML/графика, низкоуровневый протокол или существующий C/C++ код. Он не делает
+обычную бизнес-логику автоматически быстрее: JNI crossing, ручное управление памятью и сложность диагностики
+часто дороже выигрыша. Kotlin/Java остаётся владельцем Android lifecycle, permissions, UI и большинства SDK API.
+
+### Как подключить native-код
+
+1. **Собрать свой C/C++ код через CMake.** AGP вызывает CMake с NDK toolchain для каждой ABI и упаковывает
+    результат в `lib/<abi>/libname.so`. Это основной вариант для нового кода; зависимости объявляют в
+    `CMakeLists.txt`, Gradle передаёт ABI, build type и flags.
+2. **`ndk-build` (`Android.mk`/`Application.mk`).** Поддерживаемая legacy-система NDK. Используйте, когда её
+    уже требует существующая библиотека; в новом проекте CMake обычно проще интегрируется с IDE.
+3. **Предсобранная `.so`.** Положить свою библиотеку в `src/main/jniLibs/<abi>/` или получить её из AAR/Prefab.
+    Обязательны все поддерживаемые ABI и совместимость с минимальной версией Android/16 КБ page size. Не копируйте
+    произвольную `.so` из Linux: ей нужен Android NDK ABI, Bionic и разрешённые system API.
+4. **Prefab.** C/C++ dependency из Maven AAR публикует headers и prebuilt libraries; CMake получает её как
+    dependency вместо ручного копирования `.so`. Это удобный путь для библиотек вроде OkHttp/crypto/graphics,
+    если поставщик поддерживает Prefab.
+5. **`NativeActivity`/`GameActivity`.** Framework может отдать lifecycle в C/C++ entry point. Это ниша игр и
+    движков; для обычного Android-приложения Activity на Kotlin/Java с JNI-границей управляемее.
+
+В Kotlin объявляют native entry point и один раз загружают библиотеку:
+
+```kotlin
+object NativeHasher {
+     init {
+          System.loadLibrary("hasher") // ищет libhasher.so для ABI процесса
+     }
+
+     external fun sha256(input: ByteArray): ByteArray
+}
+```
+
+`System.loadLibrary` загружает библиотеку в процесс; ошибка ABI, отсутствующий split или зависимая `.so` дают
+`UnsatisfiedLinkError`. Не загружайте библиотеку в `Application.onCreate`, если первая фича не нуждается в ней:
+это добавляет I/O, relocation и static initializers в критический путь старта.
+
+### Граница JNI и регистрация методов
+
+NDK предоставляет `JNIEnv*` для вызова JVM API и `JavaVM*` для прикрепления native-потока. Есть два способа
+связать `external fun` с C/C++:
+
+- **Статическая регистрация:** экспортировать функцию с mangled именем `Java_<package>_<class>_<method>`.
+  Быстрый старт, но имя хрупкое при refactor/obfuscation; overload и ошибки сигнатуры трудно сопровождать.
+- **Динамическая регистрация:** в `JNI_OnLoad` найти класс и вызвать `RegisterNatives` с таблицей методов.
+  Обычно предпочтительнее: короткие C-имена, явные сигнатуры, меньше экспортируемых символов и меньше проблем
+  с R8. Классы/методы, ищущиеся строкой из C++, должны быть сохранены keep rules.
+
+`JNIEnv*` привязан к текущему thread и не передаётся другому native-потоку. `JavaVM*` безопасно хранить глобально;
+свой поток обязан вызвать `AttachCurrentThread`, получить свой `JNIEnv*`, а перед завершением —
+`DetachCurrentThread`. Поток, созданный из Kotlin/Java, уже прикреплён. Исключение Java после JNI-вызова не
+переходит в C++ как exception: проверяйте `ExceptionCheck`, очищайте/преобразуйте ошибку и возвращайтесь на
+Kotlin-границу. Не пропускайте C++ exception через JNI: это undefined behavior и обычно завершает процесс.
+
+### Память, ссылки и производительность JNI
+
+JNI различает ссылки на Java-объекты:
+
+| Ссылка | Время жизни | Практика |
+| --- | --- | --- |
+| Local reference | до возврата из native-вызова или `DeleteLocalRef` | для временных объектов; в большом native-loop удалять вручную, иначе переполнится local reference table |
+| Global reference | пока явно не вызвать `DeleteGlobalRef` | только для объекта, который native-код действительно должен удерживать; очищать при shutdown/destroy |
+| Weak global reference | пока GC не очистит referent | редкие observer/cache сценарии; каждый доступ проверять на `null`/сильную достижимость |
+
+`jobject` — не обычный стабильный указатель на память Java-объекта: moving GC может переместить объект. Не
+кэшируйте `JNIEnv*`, raw pointer поля объекта или `jobject` за пределами его типа ссылки. Для массивов
+`GetByteArrayElements` может вернуть копию **или** временно закрепить память; всегда вызывайте
+`ReleaseByteArrayElements`. Для чтения часто подходит `GetByteArrayRegion`, для записи — `SetByteArrayRegion`:
+они явно копируют, но не удерживают heap pinned. `GetPrimitiveArrayCritical`/`GetStringCritical` допустимы лишь
+в очень коротком участке без блокировок, I/O, allocation и JNI callbacks: пока GC ограничен, длинная секция
+создаёт паузу всего процесса.
+
+Native heap не управляется Java GC. `malloc/new` надо парно освобождать через `free/delete`, RAII и smart pointers;
+утечки, use-after-free, double free и buffer overflow обычно приводят к native crash, повреждению памяти или OOM,
+а не к Kotlin exception. Native allocation входит в память процесса и может вызвать pressure/убийство процесса,
+даже если Java heap выглядит здоровой. Для больших shared buffers рассмотрите `ByteBuffer.allocateDirect()` и
+`NewDirectByteBuffer`: это уменьшает копии между JVM и C++, но требует явного ownership/lifetime и не заменяет
+лимиты памяти устройства.
+
+Минимизируйте число JNI crossing: передавайте батч/массив вместо вызова на каждый элемент, кэшируйте `jclass` и
+`jmethodID` только с корректной global reference на class, не вызывайте Java callback под native mutex. Native
+код не знает Android lifecycle сам по себе: отмену, закрытие камеры/codec и освобождение ресурсов проектируйте
+явно на Kotlin-границе (`close`, coroutine cancellation callback, lifecycle owner). Проверяйте `.so` на каждом
+ABI, используйте sanitizers/debug symbols в debug-сборках и символизированные tombstone/Crashlytics NDK отчёты
+в production.
+
 ---
 
 # 2. Context
