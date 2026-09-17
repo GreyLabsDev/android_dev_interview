@@ -889,4 +889,34 @@ export const kotlinQuestions: Question[] = [
     source: { file: sourceFile, section: '17.1. Как моделировать результат операции?' },
     tags: ['architecture', 'sealed', 'domain-modeling', 'exhaustiveness'],
   },
+  ...([
+    ['Почему `reified T` требует inline-функции?', 'Тип T подставляется компилятором в Kotlin call site.', '5.6. reified type parameter', 'Inline и reified'],
+    ['Что невозможно надёжно проверить через reified на JVM?', '`List<String>`: аргумент String стёрт в runtime.', '5.6. reified type parameter', 'Inline и reified'],
+    ['Почему inline-функция не может быть recursive?', 'Подстановка тела не имела бы конечного размера.', 'Ограничения inline и случаи без подстановки', 'Inline и reified'],
+    ['Почему open/override метод нельзя объявить inline?', 'Реализация виртуального вызова неизвестна в call site.', 'Ограничения inline и случаи без подстановки', 'Inline и reified'],
+    ['Когда нужен noinline-параметр?', 'Когда лямбду надо сохранить или передать как значение.', '5.4. noinline и crossinline', 'Inline и reified'],
+    ['Что ограничивает crossinline?', 'Non-local return, но не саму подстановку лямбды.', '5.4. noinline и crossinline', 'Inline и reified'],
+    ['Почему Java caller не получает Kotlin inline-оптимизацию?', 'Java вызывает сгенерированный JVM-метод, а не Kotlin call site.', 'Ограничения inline и случаи без подстановки', 'Inline и reified'],
+    ['Главная архитектурная цена public inline API?', 'Тело копируется в клиентов, поэтому им нужна перекомпиляция для фикса.', '5. Функции, лямбды и extensions', 'Inline и reified'],
+    ['Что означает Kotlin List?', 'Read-only view, а не обязательно immutable объект.', '8.2. Read-only коллекция — это immutable коллекция?', 'Коллекции'],
+    ['Какая структура обычно стоит за mutableListOf на JVM?', 'ArrayList.', '8.3. Что под капотом на JVM', 'Коллекции'],
+    ['Когда ArrayDeque предпочтительнее LinkedList?', 'Для очереди или стека с операциями на концах.', '8.3. Что под капотом на JVM', 'Коллекции'],
+    ['Как associateBy ведёт себя при дублирующемся ключе?', 'Оставляет последнее значение.', '8.4. Базовые операции, аллокации и итераторы', 'Коллекции'],
+    ['Когда groupingBy().eachCount лучше groupBy?', 'Когда нужны счётчики, а не списки элементов групп.', '8.4. Базовые операции, аллокации и итераторы', 'Коллекции'],
+    ['Чем fold отличается от reduce на пустой коллекции?', 'fold использует initial, reduce бросает исключение.', '8.4. Базовые операции, аллокации и итераторы', 'Коллекции'],
+    ['Как безопасно удалить текущий элемент при обходе MutableList?', 'Через MutableIterator.remove() или removeAll.', '8.4. Базовые операции, аллокации и итераторы', 'Коллекции'],
+    ['Почему не стоит использовать плюс над List в цикле?', 'Каждый вызов создаёт новую коллекцию и может дать O(n^2).', '8.4. Базовые операции, аллокации и итераторы', 'Коллекции'],
+    ['Когда Sequence оправдана?', 'На большом входе с длинной цепочкой и early termination после измерения.', '8.6. Iterable против Sequence', 'Sequence'],
+    ['Почему sorted Sequence не является полностью lazy?', 'Для сортировки нужно собрать весь вход.', '8.6. Iterable против Sequence', 'Sequence'],
+    ['Что выбрать для suspend-потока значений?', 'Flow, а не Sequence.', '8.7. Sequence, Flow и Stream', 'Sequence'],
+    ['Как представлен IntArray на JVM?', 'Как примитивный int[] без boxing элементов.', '8.9. Массивы и примитивные массивы', 'Коллекции'],
+  ] as const).map(([prompt, answer, section, subtopic], index): Question => {
+    const id = `kotlin-${String(index + 41).padStart(3, '0')}`
+    return {
+      id, topicId: 'kotlin', subtopic, difficulty: 'senior', kind: 'theory', prompt,
+      options: [answer, 'Это не влияет на поведение операции.', 'Это гарантируется только Java runtime.', 'Для этого всегда нужен отдельный поток.'].map((text, optionIndex) => ({ id: `${id}-${'abcd'[optionIndex]}`, text })),
+      correctOptionId: `${id}-a`, explanation: { summary: answer, mechanism: 'Ответ следует из контракта Kotlin API и его JVM-представления.', trap: 'Выбирайте API по контракту и измеряйте performance-critical код.' },
+      source: { file: sourceFile, section }, tags: ['kotlin', 'revision', subtopic.toLowerCase()],
+    }
+  }),
 ]

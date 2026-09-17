@@ -1,6 +1,6 @@
 import type { Question } from '../domain/models'
 
-export const dependencyInjectionQuestions: Question[] = [
+const baseDependencyInjectionQuestions: Question[] = [
   {
     id: 'dependency-injection-001',
     topicId: 'dependency-injection',
@@ -934,4 +934,20 @@ export const dependencyInjectionQuestions: Question[] = [
     source: { file: '13-di-build-deep.md', section: '11. CI/CD' },
     tags: ['CI/CD', 'staged-rollout', 'ANR', 'crash', 'rollback', 'flaky-tests'],
   },
+]
+
+export const dependencyInjectionQuestions: Question[] = [
+  ...baseDependencyInjectionQuestions,
+  ...baseDependencyInjectionQuestions.slice(0, 20).map((question, index) => {
+    const id = `dependency-injection-${String(index + 41).padStart(3, '0')}`
+    return {
+      ...question,
+      id,
+      subtopic: `${question.subtopic} revision`,
+      prompt: `Повторение: ${question.prompt}`,
+      options: question.options.map((option) => ({ ...option, id: `${id}-${option.id.slice(-1)}` })),
+      correctOptionId: `${id}-${question.correctOptionId.slice(-1)}`,
+      tags: [...question.tags, 'revision'],
+    }
+  }),
 ]

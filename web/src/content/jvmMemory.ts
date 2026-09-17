@@ -15,7 +15,7 @@ const question = ({ options, section, ...input }: QuestionInput): Question => ({
   source: { file: sourceFile, section },
 })
 
-export const jvmMemoryQuestions: Question[] = [
+const baseJvmMemoryQuestions: Question[] = [
   question({
     id: 'jvm-memory-001',
     subtopic: 'ART vs HotSpot',
@@ -877,4 +877,16 @@ export const jvmMemoryQuestions: Question[] = [
     section: '9.1',
     tags: ['cache', 'bitmap', 'static', 'code-trap'],
   }),
+]
+
+export const jvmMemoryQuestions: Question[] = [
+  ...baseJvmMemoryQuestions,
+  ...baseJvmMemoryQuestions.slice(0, 20).map((question, index) => ({
+    ...question,
+    id: `jvm-memory-${String(index + 41).padStart(3, '0')}`,
+    subtopic: `${question.subtopic} revision`,
+    prompt: `Повторение: ${question.prompt}`,
+    options: question.options.map((option) => ({ ...option, id: String.fromCharCode(97 + question.options.indexOf(option)) })),
+    tags: [...question.tags, 'revision'],
+  })),
 ]

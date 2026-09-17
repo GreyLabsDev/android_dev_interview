@@ -40,7 +40,7 @@ function question(index: number, draft: QuestionDraft): Question {
   }
 }
 
-export const androidSdkQuestions: Question[] = [
+const baseAndroidSdkQuestions: Question[] = [
   question(1, {
     subtopic: 'Модель приложения',
     difficulty: 'senior',
@@ -858,5 +858,21 @@ export const androidSdkQuestions: Question[] = [
     },
     section: '15.1',
     tags: ['application', 'startup', 'code-review', 'datastore'],
+  }),
+]
+
+export const androidSdkQuestions: Question[] = [
+  ...baseAndroidSdkQuestions,
+  ...baseAndroidSdkQuestions.slice(0, 20).map((question, index) => {
+    const id = `android-sdk-${String(index + 41).padStart(3, '0')}`
+    return {
+      ...question,
+      id,
+      subtopic: `${question.subtopic} revision`,
+      prompt: `Повторение: ${question.prompt}`,
+      options: question.options.map((option) => ({ ...option, id: `${id}-${option.id.slice(-1)}` })),
+      correctOptionId: `${id}-${question.correctOptionId.slice(-1)}`,
+      tags: [...question.tags, 'revision'],
+    }
   }),
 ]

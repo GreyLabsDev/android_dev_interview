@@ -1,6 +1,6 @@
 import type { Question } from '../domain/models'
 
-export const coroutinesQuestions: Question[] = [
+const baseCoroutinesQuestions: Question[] = [
   {
     id: 'coroutines-001',
     topicId: 'coroutines',
@@ -922,4 +922,17 @@ export const coroutinesQuestions: Question[] = [
     source: { file: '08-coroutines-android.md', section: '5. «Что не так с этим кодом»' },
     tags: ['code-review', 'cancellation', 'flowOn', 'structured-concurrency'],
   },
+]
+
+export const coroutinesQuestions: Question[] = [
+  ...baseCoroutinesQuestions,
+  ...baseCoroutinesQuestions.slice(0, 20).map((question, index) => ({
+    ...question,
+    id: `coroutines-${String(index + 41).padStart(3, '0')}`,
+    subtopic: `${question.subtopic} revision`,
+    prompt: `Повторение: ${question.prompt}`,
+    options: question.options.map((option) => ({ ...option, id: `coroutines-${String(index + 41).padStart(3, '0')}-${option.id}` })),
+    correctOptionId: `coroutines-${String(index + 41).padStart(3, '0')}-${question.correctOptionId}`,
+    tags: [...question.tags, 'revision'],
+  })),
 ]
