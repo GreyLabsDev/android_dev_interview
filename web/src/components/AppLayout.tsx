@@ -41,7 +41,7 @@ export function AppLayout() {
         <Outlet />
       </main>
       <footer>
-        Материалы для подготовки к собеседованию Senior Android Developer
+        ©GreyLabsDev & Community | Материалы для подготовки к собеседованию Senior Android Developer
       </footer>
     </div>
   )
