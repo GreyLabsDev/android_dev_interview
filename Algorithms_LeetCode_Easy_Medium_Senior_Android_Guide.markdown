@@ -16,8 +16,7 @@
 > Senior Android интервью обычно не требует олимпиадных алгоритмов. Ожидается уверенное владение базовыми структурами, чистая коммуникация, корректные границы, оценка сложности и способность объяснить компромиссы.
 
 **Место в комплекте.** Этот файл — основной материал по блоку 14 `01-checklist.md`; вопросы для
-самопроверки — блок 13 `03-question-bank.md` (155–170), порядок прохождения по неделям — раздел 28
-здесь и неделя 7 в `02-plan.md`.
+самопроверки — блок 13 `03-question-bank.md` (155–170).
 
 Важная оговорка про охват: гайд готовит к **алгоритмической** секции — той, что в Яндексе идёт
 в простом редакторе на две задачи за час. Но чеклист помечает 🔴 ещё два формата, которых здесь нет:
@@ -3521,65 +3520,7 @@ val last = list.removeAt(list.lastIndex)
 
 ---
 
-# 28. План подготовки
-
-## Этап 1: база
-
-1. Two Sum.
-2. Valid Parentheses.
-3. Binary Search.
-4. Valid Palindrome.
-5. Best Time to Buy and Sell Stock.
-6. Reverse Linked List.
-7. Maximum Depth of Binary Tree.
-8. Flood Fill.
-
-Цель: без подсказок за 15–20 минут.
-
-## Этап 2: основные Medium-паттерны
-
-1. Longest Substring Without Repeating Characters.
-2. 3Sum.
-3. Merge Intervals.
-4. Subarray Sum Equals K.
-5. Daily Temperatures.
-6. Kth Largest Element.
-7. Number of Islands.
-8. Course Schedule.
-9. Combination Sum.
-10. House Robber.
-
-Цель: распознать паттерн за 3–5 минут и решить за 25–35.
-
-## Этап 3: углубление
-
-1. Search in Rotated Sorted Array.
-2. Koko Eating Bananas.
-3. LRU Cache.
-4. Validate BST.
-5. Lowest Common Ancestor.
-6. Rotting Oranges.
-7. Accounts Merge.
-8. Network Delay Time.
-9. Coin Change.
-10. Partition Equal Subset Sum.
-11. Longest Common Subsequence.
-
-## Метод повторения
-
-Для каждой задачи:
-
-1. Решить с разбором.
-2. Через 2–3 дня повторить без подсказки.
-3. Через неделю решить с чистого листа.
-4. Проговорить invariant и complexity.
-5. Записать не код, а trigger паттерна и ошибку.
-
-Не решайте 20 почти одинаковых задач подряд. Лучше 3–5 задач каждого паттерна с интервальным повторением.
-
----
-
-# 29. Чек-лист Senior-кандидата
+# 28. Чек-лист Senior-кандидата
 
 Кандидат должен уметь:
 
@@ -3613,7 +3554,7 @@ val last = list.removeAt(list.lastIndex)
 
 ---
 
-# 30. Полезные источники
+# 29. Полезные источники
 
 - [LeetCode](https://leetcode.com/problemset/)
 - [Kotlin ArrayDeque API](https://kotlinlang.org/api/core/kotlin-stdlib/kotlin.collections/-array-deque/)

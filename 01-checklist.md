@@ -17,13 +17,14 @@
 - [ ] 🔴 `sealed class` vs `sealed interface` vs `enum`: иерархии в разных модулях, исчерпывающий `when`
 - [ ] 🔴 Nullability, платформенные типы, `lateinit` vs `by lazy`, потокобезопасность `lazy`
 - [ ] 🔴 `val` vs `const val` vs `@JvmStatic`, во что превращается в байткоде
-- [ ] 🔴 Обобщения: ковариантность/контравариантность (`in`/`out`), `reified`, стирание типов
-- [ ] 🔴 Inline-функции: зачем, `noinline`/`crossinline`, non-local return, цена инлайна для размера кода
+- [ ] 🔴 Обобщения: ковариантность/контравариантность (`in`/`out`), `reified`, стирание типов; что `reified` даёт в Kotlin call site и почему не проверяет `List<String>` в runtime
+- [ ] 🔴 Inline-функции: compile-time подстановка против JIT-inlining, `noinline`/`crossinline`, non-local return, цена для DEX и binary compatibility; почему нельзя inline recursion, `open`/`override`, а Java caller не получает подстановку
 - [ ] 🟡 `value class` (inline class): когда происходит боксинг, интероп с Java
 - [ ] 🟡 Делегаты: `by`, `Delegates.observable`, свой `ReadWriteProperty`
 - [ ] 🟡 `Any` / `Unit` / `Nothing`: где `Nothing` реально помогает вывести тип
 - [ ] 🟡 Scope-функции без магии: чем `let` отличается от `run`/`also`/`apply`/`with` и когда это принципиально
 - [ ] 🟡 Extension-функции: статическая диспетчеризация, почему они не переопределяются
+- [ ] 🟡 Коллекции Kotlin/JVM: read-only vs immutable, `ArrayList`/`ArrayDeque`/hash-коллекции, сложность и аллокации; `associate*` vs `groupBy`/`groupingBy`, `fold` vs `reduce`, `Iterable` vs `Sequence` и граница с `java.util`
 - [ ] 🟢 Kotlin 2.x: K2-компилятор, что изменилось для сборки и для Compose
 - [ ] 🟢 Kotlin 2.2: guard conditions, non-local `break`/`continue`, multi-dollar interpolation, nested type aliases
 - [ ] 🟢 Kotlin 2.3.x: name-based destructuring, изменение разрешения перегрузок для context parameters (классический «вопрос с подвохом»)
@@ -33,9 +34,9 @@
 ## 2. Корутины и Flow 🔴
 
 - [ ] 🔴 Что такое корутина на уровне компилятора: CPS-трансформация, `Continuation`, state machine, почему это не поток
-- [ ] 🔴 Structured concurrency: `Job`, родитель-потомок, отмена вниз по дереву, ошибки вверх
+- [ ] 🔴 Structured concurrency: `Job`, родитель-потомок, отмена вниз по дереву, ошибки вверх; `cancel` vs `join` vs `cancelAndJoin`, отмена только descendants и опасность detached `Job`
 - [ ] 🔴 `coroutineScope` vs `supervisorScope`, `SupervisorJob`, `CoroutineExceptionHandler` — где он реально срабатывает, а где нет
-- [ ] 🔴 Кооперативная отмена: `isActive`, `ensureActive`, `yield`, `CancellationException`, почему `try/catch(Exception)` ломает отмену, `NonCancellable`
+- [ ] 🔴 Кооперативная отмена: `isActive`, `ensureActive`, `yield`, `CancellationException`, почему `try/catch(Exception)` ломает отмену, `NonCancellable`; когда `ensureActive` нужен в CPU-loop, почему он не делает suspension и не прерывает blocking/native API
 - [ ] 🔴 Диспетчеры: `Main`, `Main.immediate`, `Default`, `IO`, `Unconfined`; `limitedParallelism`; когда `withContext` нужен, а когда это карго-культ
 - [ ] 🔴 `launch` vs `async`, `awaitAll`, fail-fast и таймауты (`withTimeout` vs `withTimeoutOrNull`)
 - [ ] 🔴 Cold vs hot: `Flow` vs `StateFlow` vs `SharedFlow` vs `Channel`; когда что и как моделировать одноразовые UI-события
@@ -47,7 +48,7 @@
 - [ ] 🟡 Тестирование: `runTest`, `TestDispatcher` (`Standard` vs `Unconfined`), `advanceUntilIdle`, `MainDispatcherRule`, Turbine
 - [ ] 🟡 Конкурентный доступ: `Mutex` vs `synchronized`, actor-подход, атомарность `MutableStateFlow.update`
 - [ ] 🟢 `callbackFlow` / `channelFlow`, `awaitClose`, обёртка legacy-колбэков
-- [ ] 🟢 Кастомные `CoroutineContext`-элементы, `ThreadLocal` и `asContextElement`
+- [ ] 🟢 `CoroutineContext`: ключи `Job`/dispatcher/name/handler, слияние через `+` и правило «правый побеждает», сборка owned scope, `ThreadContextElement`/`asContextElement`; почему не стоит хранить там `Activity` или UI state
 
 ## 2а. Многопоточность и синхронизация 🔴
 
@@ -56,13 +57,13 @@
 - [ ] 🔴 Visibility, atomicity, ordering: что решает `@Volatile`, а что нет; почему `counter++` небезопасен
 - [ ] 🔴 Happens-before: источники отношения; почему «на моём устройстве работает» — не аргумент; слабая модель памяти ARM против x86
 - [ ] 🔴 Data race против race condition; гонка, которую не лечит лок (устаревший ответ затирает свежий)
-- [ ] 🔴 `synchronized`: монитор, реентерабельность, почему нельзя лочиться на `this`, строке и боксированном числе
+- [ ] 🔴 `synchronized`: монитор, реентерабельность и hold count, почему нельзя лочиться на `this`, строке и боксированном числе; почему reentrancy не устраняет дедлок между разными локами
 - [ ] 🔴 CAS и атомики: `AtomicInteger`/`AtomicReference`, `compareAndSet`, почему лямбда в `updateAndGet` должна быть чистой
 - [ ] 🔴 Безопасная публикация: `val` как final-поле, утечка `this` из конструктора, корректный double-checked locking, режимы `lazy`
 - [ ] 🔴 Потокобезопасные коллекции: почему `Collections.synchronizedMap` не спасает, свойства `ConcurrentHashMap`, `CopyOnWriteArrayList`, непотокобезопасный `SparseArray`
 - [ ] 🔴 Иерархия выбора: immutable-состояние → confinement → атомарная замена → `Mutex` → `synchronized`
 - [ ] 🟡 `synchronized` в ART изнутри: lock word, thin lock, инфляция, fat lock и `Monitor`
-- [ ] 🟡 `ReentrantLock`: `tryLock` с таймаутом, `lockInterruptibly`, честность, `Condition`; когда `ReadWriteLock` вредит
+- [ ] 🟡 `Mutex` vs JVM-локи: suspension против блокировки thread, non-reentrant `Mutex`, отменяемое ожидание, `owner` token и граница Java interop; `ReentrantLock`: `tryLock` с таймаутом, `lockInterruptibly`, честность, `Condition`; когда `ReadWriteLock` вредит
 - [ ] 🟡 Пулы: параметры `ThreadPoolExecutor`, порядок «потоки → очередь → потоки», политики отказа, чем плох `newFixedThreadPool`
 - [ ] 🟡 Координация: `CountDownLatch`, `CyclicBarrier`, `Semaphore` и их корутиновые аналоги
 - [ ] 🟡 `wait`/`notify`/`notifyAll`: почему только под тем же монитором, проблема потерянного `notify`, зачем проверять условие в `while`, а не в `if` (spurious wakeup)
@@ -176,6 +177,9 @@
 - [ ] 🔴 Android 17 / API 37: opt-out по адаптивности отменён, `static final` нельзя менять рефлексией, обязательный `ACCESS_LOCAL_NETWORK`, задержка SMS с OTP, Certificate Transparency по умолчанию, lock-free `MessageQueue`
 - [ ] 🔴 Адаптивность как требование, а не фича: `WindowSizeClass`, multi-window, desktop windowing, сохранение состояния при изменении размера окна
 - [ ] 🔴 `minSdk` / `targetSdk` / `compileSdk`: что означает каждый, какой из них влияет на поведение системы, а какой — только на компиляцию
+- [ ] 🔴 Cold start по шагам: Launcher/`system_server` → Zygote fork → `ActivityThread`/class loader → providers → `Application` → `Instrumentation`/Activity → первый кадр; почему provider auto-init и тяжёлый `Application.onCreate` ухудшают TTID
+- [ ] 🟡 APK/AAB под капотом: AAR/manifest merger, Kotlin/Java → D8/R8 → `classes*.dex`, AAPT2/resources, assets, signing/zipalign, ABI/config splits и APK Analyzer
+- [ ] 🟡 NDK/JNI: CMake, `ndk-build`, prebuilt `.so`, Prefab и NativeActivity; `JNIEnv` thread-bound, `RegisterNatives`, local/global references, native heap, копии/pinning массивов и 16 КБ page size
 - [ ] 🟡 Ограничения Background Activity Launch: кто делится правами при таргете 34 и 35, `setPendingIntentBackgroundActivityStartMode`
 - [ ] 🟡 `BroadcastReceiver` сегодня: почему статическая регистрация почти бесполезна, что обязательно указывать при динамической с Android 14 (`RECEIVER_EXPORTED` / `RECEIVER_NOT_EXPORTED`)
 - [ ] 🟡 Activity Result API вместо `startActivityForResult`; Splash screen API вместо своей Activity; `androidx.startup` вместо инициализации через собственный `ContentProvider`
@@ -201,8 +205,9 @@
 - [ ] 🔴 ANR: пороги (5 с на input dispatch), user-perceived ANR rate как Play Vital, чтение ANR-трейсов, типовые причины (I/O на main, дедлоки, тяжёлый `onCreate`, `SharedPreferences.commit`)
 - [ ] 🔴 Утечки памяти: топовые причины (статические ссылки на Context, слушатели без отписки, внутренние классы, корутины вне scope), LeakCanary, Memory Profiler, heap dump
 - [ ] 🔴 Устройство памяти процесса: Java heap, native heap, стеки, code, graphics; PSS/RSS/USS; почему рост памяти может быть не виден в Java heap
-- [ ] 🔴 Reachability и GC roots; почему циклические ссылки не мешают сборке; почему живой поток — это корень
-- [ ] 🔴 Ссылки: strong, `SoftReference`, `WeakReference`, `PhantomReference` + `ReferenceQueue`; почему soft-ссылки — плохой кэш на Android
+- [ ] 🔴 Reachability и GC roots: strong path, `ThreadLocal`/singleton как путь от корня, почему циклы не мешают сборке и живой поток удерживает граф
+- [ ] 🔴 Mark-and-sweep: mark roots → обход strong graph → обработка special references → sweep/compact; какие части модели одинаковы у Dalvik/ART и почему реализация ART быстрее/менее фрагментирована
+- [ ] 🔴 Ссылки: strong, `SoftReference`, `WeakReference`, `PhantomReference` + `ReferenceQueue`; порядок reachability, когда очищается referent, почему soft-ссылки — плохой кэш и почему надо сильно удерживать сам объект `Reference`
 - [ ] 🔴 Как LeakCanary определяет утечку изнутри: `ObjectWatcher`, слабая ссылка в очереди, порог удержанных, Shark и кратчайший путь до корня
 - [ ] 🟡 Сборщики в ART: CMS → Concurrent Copying (Android 8) → generational CC (Android 10) → CMC на `userfaultfd` (Android 14+) → генерационный CMC; что решал каждый шаг
 - [ ] 🟡 Барьеры: write barrier и card table, Baker-style read barrier у CC и почему CMC от него избавился
@@ -274,8 +279,8 @@
 ## 14. Алгоритмы и live coding 🟡
 
 > Разбор всего блока — в `Algorithms_LeetCode_Easy_Medium_Senior_Android_Guide.markdown`:
-> паттерны с кодом на Kotlin, инварианты, типовые ошибки, Kotlin/JVM-грабли и план подготовки
-> по этапам. Практические задачи на корутинах (дебаунсер, пул с ограничением, кэш с TTL) —
+> паттерны с кодом на Kotlin, инварианты, типовые ошибки и Kotlin/JVM-грабли. Практические задачи
+> на корутинах (дебаунсер, пул с ограничением, кэш с TTL) —
 > в `08-coroutines-android.md`, раздел 4.
 
 - [ ] 🔴 Big O по времени и памяти, умение оценить своё решение вслух
@@ -293,7 +298,8 @@
 
 ## 15. Mobile System Design 🔴
 
-- [ ] 🔴 Фреймворк ответа (детали в `04-system-design.md`): требования → оценка масштаба → архитектура и обоснование → компоненты → сценарии отказа → трейд-офы
+- [ ] 🔴 Фреймворк ответа (детали в `04-system-design.md`): за 5–10 минут собрать functional/non-functional requirements и out of scope, подтвердить целевой продукт → HLD с крупными компонентами → LLD/deep dive по запросу → презентовать решение, риски и трейд-оффы
+- [ ] 🔴 Вести system design как обсуждение реальной фичи: периодически озвучивать допущение, калибровать его коротким вопросом интервьюеру и явно пересматривать схему при новой вводной
 - [ ] 🔴 Уметь проговорить API-контракт: эндпоинты, форма ответов, стратегия пагинации
 - [ ] 🔴 Мобильные ограничения как отдельный класс проблем: батарея, трафик, память, обрывы сети, смерть процесса, устаревшие версии приложения на руках у пользователей
 - [ ] 🔴 Deep dive: способность 20 минут держать разговор про одну коробочку на схеме — именно это отличает оффер от «прошёл»
