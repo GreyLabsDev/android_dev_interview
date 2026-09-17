@@ -34,6 +34,59 @@ suspend fun loadProfile(api: Api): Profile {
 Если в `launch` передать другой dispatcher или `CoroutineName`, заменится только элемент с тем же ключом;
 передача нового `Job` разрывает обычную parent-child связь и требует осознанного управления lifetime.
 
+### `CoroutineContext`: ключи, наследование и сборка
+
+`CoroutineContext` — неизменяемый набор элементов, индексированный их `CoroutineContext.Key`. Это не просто
+`Map`: каждый элемент сам знает свой ключ и может участвовать в объединении контекстов. Главные стандартные элементы:
+
+| Элемент | Ключ | Кто использует | Как управлять |
+| --- | --- | --- | --- |
+| `Job` / `SupervisorJob` | `Job` | structured concurrency, отмена, `join`, parent-child tree | владелец scope отменяет Job; не подменять его внутри suspend-функции без причины |
+| `CoroutineDispatcher` | `ContinuationInterceptor` | планирует продолжение после suspension | передавать в builder или временно менять через `withContext` |
+| `CoroutineName` | `CoroutineName` | debugger, stack trace, логи | ставить на границах значимых background-задач |
+| `CoroutineExceptionHandler` | `CoroutineExceptionHandler` | последняя обработка необработанной ошибки root `launch` | логирование/репортинг; не заменяет `try/catch` и не возвращает coroutine к жизни |
+| `ThreadContextElement` | пользовательский ключ элемента | переносит `ThreadLocal`/MDC при смене потока | применять для tracing/legacy ThreadLocal, не для ownership состояния |
+
+Оператор `+` создаёт новый context; исходные контексты не меняются. Если оба содержат элемент с одинаковым ключом,
+выигрывает элемент **справа**. Поэтому код ниже заменяет имя и dispatcher, но не создаёт новый `Job`:
+
+```kotlin
+val requestContext = CoroutineName("sync") + Dispatchers.IO
+
+scope.launch(requestContext) {
+    // Job будет дочерним Job scope, имя = sync, dispatcher = IO.
+}
+```
+
+`launch`, `async` и `withContext` объединяют переданный context с текущим по этому правилу. `withContext` временно
+меняет контекст только для своего блока и ждёт его завершения; `launch`/`async` создают child Job и возвращают
+немедленно. Получить элементы из suspend-кода можно без хранения scope: `coroutineContext[Job]`,
+`coroutineContext[CoroutineName]` или `currentCoroutineContext()`.
+
+`Job` — особый элемент. Новый `SupervisorJob()` справа заменит унаследованный Job и отсоединит работу от родителя:
+
+```kotlin
+// Хорошо: у app scope есть явный владелец и предсказуемая политика ошибок.
+val appScope = CoroutineScope(
+    SupervisorJob() + Dispatchers.Default + CoroutineName("AppBackground")
+)
+
+// Плохо внутри suspend-функции: caller уже не отменяет эту работу.
+suspend fun startDetachedUpload() = coroutineScope {
+    launch(SupervisorJob()) { upload() }
+}
+```
+
+Если независимому Job всё же нужен parent, укажите его явно: `SupervisorJob(parentJob)`. В обычном feature-коде
+предпочтительнее `supervisorScope { ... }`: он сохраняет дерево владельцев, но изолирует ошибки siblings на время
+блока. Не кладите `Activity`, `View`, `Context` или mutable UI state в собственный `CoroutineContext.Element`:
+context наследуется детьми и легко превращает такую ссылку в утечку.
+
+Свой элемент имеет смысл только для сквозных метаданных, например request ID. Для legacy `ThreadLocal` нужен
+`ThreadContextElement`, который устанавливает значение перед выполнением coroutine и восстанавливает старое после
+переключения потока. В новом Android-коде чаще передавайте metadata явно либо используйте `CoroutineName`; context
+не должен становиться скрытым контейнером зависимостей.
+
 `withContext(Dispatchers.IO)` переключает контекст **внутри уже существующей** корутины и ждёт результат;
 он не создаёт независимую фоновую задачу. Dispatcher выбирают по природе работы: `Default` для CPU-bound
 вычислений, `IO` для блокирующего I/O. Suspend-сетевой API обычно не требует вручную оборачивать каждый
@@ -192,6 +245,64 @@ suspend fun hashAll(values: List<ByteArray>): List<Hash> = withContext(Dispatche
     }
 }
 ```
+
+### Откуда приходит отмена и как остановить coroutine
+
+Отмена — это перевод `Job` в состояние cancelling с причиной `CancellationException`; это **запрос**
+к cooperative-коду завершиться, а не принудительное убийство потока. Обычные причины и соответствующие API:
+
+| Сценарий | Что вызвать или что происходит | Когда применять |
+| --- | --- | --- |
+| Пользователь ушёл с экрана | `viewModelScope` отменяется при `onCleared`; `repeatOnLifecycle` отменяет block на `STOPPED` | UI-запросы и collection, полезные только пока виден экран |
+| Владелец больше не нуждается в работе | `job.cancel()` или `scope.cancel()` | отменить конкретную задачу или всё дерево owned scope |
+| Нужен результат завершения | `job.cancelAndJoin()` или `deferred.cancelAndJoin()` | перед заменой ресурса, тестом или стартом новой эксклюзивной операции |
+| Вышел срок | `withTimeout { ... }` / `withTimeoutOrNull { ... }` отменяют **свой дочерний блок** | deadline сетевого вызова или операции по SLO |
+| Один из children упал | обычный `coroutineScope` отменяет siblings и родителя; `supervisorScope` изолирует siblings | fail-fast для атомарной операции или частичный результат для независимых задач |
+| Пришёл более свежий input | `collectLatest` отменяет тело обработки; `flatMapLatest` — предыдущий inner Flow | поиск, фильтры, рендер устаревшего состояния |
+| Остановить текущую coroutine изнутри | `cancel()` из её `CoroutineScope`/context, затем выйти или дойти до cancellation point | отмена по бизнес-условию, например пользователь явно прервал экспорт |
+
+`cancel()` возвращает управление сразу: оно не ждёт `finally`, детей или освобождения ресурса. Если следующий шаг
+зависит от завершения, используйте `cancelAndJoin()`; `join()` сам по себе только ждёт и **не** инициирует отмену.
+`Job.cancel(cause)` принимает причину, но для обычной отмены не стоит создавать прикладную ошибку: причина нужна
+для диагностики, а outcome операции передаётся отдельным domain result.
+
+Отменяются только descendants данного `Job`; sibling или независимый `applicationScope` не затрагиваются. Именно
+поэтому не создавайте новый `CoroutineScope` внутри suspend-функции: caller не сможет отменить эту работу. И наоборот,
+не отменяйте `viewModelScope` ради одного запроса: сохраните его `Job` и отмените только его.
+
+### `ensureActive`: явная проверка для CPU и чужого blocking-кода
+
+`ensureActive()` читает `Job` из текущего `CoroutineContext` и, если он уже cancelled, бросает соответствующий
+`CancellationException`; если Job активен, это очень дешёвая проверка без suspension и без передачи управления
+другой coroutine. Поэтому он не «делает цикл асинхронным» и не даёт fairness сам по себе.
+
+Применяйте его в долгих участках, где нет естественных cancellation points: CPU-циклах, обходе большого дерева,
+сжатии/шифровании, декодировании, обработке миллионов записей или перед дорогой очередной фазой алгоритма.
+Проверяйте периодически, а не обязательно на каждой итерации: частоту выбирают по цене одной итерации и требуемой
+отзывчивости. Для очень дешёвого tight loop достаточно, например, каждой 1 024-й итерации.
+
+```kotlin
+suspend fun indexDocuments(documents: List<Document>): SearchIndex =
+    withContext(Dispatchers.Default) {
+        val index = SearchIndex()
+        documents.forEachIndexed { indexInBatch, document ->
+            if ((indexInBatch and 1_023) == 0) ensureActive()
+            index.add(tokenize(document))
+        }
+        index
+    }
+```
+
+У suspend API (`delay`, `await`, `withContext`, `Mutex.lock`, большинство Retrofit/Room вызовов) проверка уже
+встроена, поэтому ставить `ensureActive()` после каждой такой строки избыточно. Он также не способен остановить
+`Thread.sleep`, синхронный HTTP-клиент, native-вызов или чужую функцию, пока та не вернула управление. Такие API
+нужно заменить на cancellable-вариант, вынести на подходящий dispatcher и обеспечить их собственную отмену;
+для callback API используйте `suspendCancellableCoroutine` и отменяйте внешний request в `invokeOnCancellation`.
+
+Если алгоритм должен не только заметить отмену, но и дать другим корутинам шанс выполниться, используйте `yield()`:
+он проверяет отмену **и** делает suspension point. Не вставляйте `yield` в каждый шаг: это снижает throughput. В коде,
+который не является `suspend`, проверяйте `currentCoroutineContext().ensureActive()` после переноса работы в
+suspend-границу либо передавайте cancellation signal явно; не пытайтесь «убить» работающий thread через coroutine API.
 
 `CancellationException` — управляющий сигнал, а не прикладная ошибка. Не превращайте его в `Error`, не
 ретрайте и не проглатывайте широким `catch`:
